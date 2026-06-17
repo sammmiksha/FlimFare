@@ -12,11 +12,12 @@ function App() {
   const [flowState, setFlowState] = useState('LANDING'); // LANDING, PICK_LAYOUT, CAPTURE, EDIT, EXPORT
   const [selectedLayout, setSelectedLayout] = useState('single'); // single, strip
   const [snappedPhotos, setSnappedPhotos] = useState([]);
-  const [activeCanvas, setActiveCanvas] = useState(null);
+  const [printUrl, setPrintUrl] = useState('');
 
   const handleEnterBooth = () => {
     // Unlock Web Audio API context on first user tap
     audioManager.init();
+    audioManager.playCurtain();
     setFlowState('PICK_LAYOUT');
   };
 
@@ -38,14 +39,15 @@ function App() {
     setFlowState('CAPTURE');
   };
 
-  const handleGeneratePrint = (canvas) => {
-    setActiveCanvas(canvas);
+  const handleGeneratePrint = (url) => {
+    setPrintUrl(url);
     setFlowState('EXPORT');
   };
 
   const handleReset = () => {
     setSnappedPhotos([]);
-    setActiveCanvas(null);
+    setPrintUrl('');
+    audioManager.playCurtain();
     setFlowState('LANDING'); // Closes the curtains for the next session
   };
 
@@ -80,7 +82,7 @@ function App() {
 
           {flowState === 'EXPORT' && (
             <LoadingExport
-              canvasInstance={activeCanvas}
+              printUrl={printUrl}
               onReset={handleReset}
             />
           )}
@@ -95,7 +97,6 @@ const styles = {
     flex: 1,
     position: 'relative',
     width: '100%',
-    height: '100%',
     overflow: 'hidden',
     display: 'flex',
     flexDirection: 'column',

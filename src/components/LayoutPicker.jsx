@@ -1,13 +1,61 @@
 import React from 'react';
 import { audioManager } from '../utils/audioManager';
+import { LAYOUTS } from '../utils/layoutConfig';
 
 const LayoutPicker = ({ onSelectLayout }) => {
-  const handleSelect = (layout) => {
+  const handleSelect = (layoutId) => {
     // Unlock iOS Safari Web Audio API context on first user tap
     audioManager.init();
     
     // Pass selection up
-    onSelectLayout(layout);
+    onSelectLayout(layoutId);
+  };
+
+  const renderPreviewMock = (layoutId) => {
+    switch (layoutId) {
+      case 'single':
+        return (
+          <div className="polaroid-preview-mock">
+            <div className="polaroid-preview-inner"></div>
+          </div>
+        );
+      case 'digicam':
+        return (
+          <div className="digicam-preview-mock">
+            <div className="digicam-preview-flash"></div>
+            <div className="digicam-preview-lens"></div>
+            <div className="digicam-preview-inner"></div>
+          </div>
+        );
+      case 'strip':
+        return (
+          <div className="strip-preview-mock">
+            <div className="strip-preview-inner"></div>
+            <div className="strip-preview-inner"></div>
+            <div className="strip-preview-inner"></div>
+          </div>
+        );
+      case 'strip5':
+        return (
+          <div className="strip5-preview-mock">
+            <div className="strip5-preview-sprockets-left">
+              {Array.from({ length: 8 }).map((_, i) => <div key={i} className="strip5-sprocket-hole" />)}
+            </div>
+            <div className="strip5-preview-inner-container">
+              <div className="strip5-preview-inner"></div>
+              <div className="strip5-preview-inner"></div>
+              <div className="strip5-preview-inner"></div>
+              <div className="strip5-preview-inner"></div>
+              <div className="strip5-preview-inner"></div>
+            </div>
+            <div className="strip5-preview-sprockets-right">
+              {Array.from({ length: 8 }).map((_, i) => <div key={i} className="strip5-sprocket-hole" />)}
+            </div>
+          </div>
+        );
+      default:
+        return null;
+    }
   };
 
   return (
@@ -18,23 +66,20 @@ const LayoutPicker = ({ onSelectLayout }) => {
       </div>
 
       <div className="picker-options">
-        <div className="picker-card" onClick={() => handleSelect('single')}>
-          <div className="polaroid-preview-mock">
-            <div className="polaroid-preview-inner"></div>
-          </div>
-          <div className="picker-card-title">Polaroid Box</div>
-          <div className="picker-card-desc">1:1 Classic Polaroid Frame with a bottom chin</div>
-        </div>
-
-        <div className="picker-card" onClick={() => handleSelect('strip')}>
-          <div className="strip-preview-mock">
-            <div className="strip-preview-inner"></div>
-            <div className="strip-preview-inner"></div>
-            <div className="strip-preview-inner"></div>
-          </div>
-          <div className="picker-card-title">3-Photo Strip</div>
-          <div className="picker-card-desc">1:3 Traditional vertical film strip template</div>
-        </div>
+        {Object.keys(LAYOUTS).map((layoutId) => {
+          const cfg = LAYOUTS[layoutId];
+          return (
+            <div key={layoutId} className="picker-card" onClick={() => handleSelect(layoutId)}>
+              <div className="picker-mock-wrapper">
+                {renderPreviewMock(layoutId)}
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                <div className="picker-card-title">{cfg.name}</div>
+                <div className="picker-card-desc">{cfg.desc}</div>
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

@@ -105,6 +105,78 @@ class AudioManager {
     clackSource.stop(now + clackDuration + 0.05);
   }
 
+  // Synthesize a velvet curtain sliding/swooshing sound (iOS safe Web Audio API)
+  playCurtain() {
+    if (!this.ctx) {
+      this.init();
+    }
+    if (!this.ctx) return;
+
+    if (this.ctx.state === 'suspended') {
+      this.ctx.resume();
+    }
+
+    const now = this.ctx.currentTime;
+    const duration = 0.8; // 800ms matches curtain transition css
+    
+    // 1. Velvet fabric sliding swoosh (white noise with bandpass sweep)
+    const buffer = this.createNoiseBuffer(duration);
+    const source = this.ctx.createBufferSource();
+    source.buffer = buffer;
+
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.Q.setValueAtTime(1.2, now);
+    
+    // Frequency sweeps up and down slightly (simulating rings movement)
+    filter.frequency.setValueAtTime(250, now);
+    filter.frequency.exponentialRampToValueAtTime(800, now + 0.3);
+    filter.frequency.exponentialRampToValueAtTime(180, now + duration);
+
+    // Gain node for volume envelope
+    const gainNode = this.ctx.createGain();
+    gainNode.gain.setValueAtTime(0.001, now);
+    gainNode.gain.linearRampToValueAtTime(0.3, now + 0.15); // fade in
+    gainNode.gain.exponentialRampToValueAtTime(0.001, now + duration); // fade out
+
+    source.connect(filter);
+    filter.connect(gainNode);
+    gainNode.connect(this.ctx.destination);
+
+    source.start(now);
+    source.stop(now + duration + 0.05);
+
+    // 2. Metal rings clinking / sliding (synthesize high-frequency ring resonances)
+    // Plays 5 quick metallic clinks at staggered delays during the curtain motion
+    const clinkDelays = [0.08, 0.22, 0.38, 0.52, 0.68];
+    clinkDelays.forEach((delay) => {
+      const clinkTime = now + delay;
+      
+      const osc1 = this.ctx.createOscillator();
+      const osc2 = this.ctx.createOscillator();
+      const clinkGain = this.ctx.createGain();
+
+      osc1.type = 'sine';
+      osc1.frequency.setValueAtTime(3200, clinkTime); // Main high metal frequency
+
+      osc2.type = 'sine';
+      osc2.frequency.setValueAtTime(4650, clinkTime); // Inharmonic frequency for clang/metal character
+
+      clinkGain.gain.setValueAtTime(0.001, clinkTime);
+      clinkGain.gain.linearRampToValueAtTime(0.04, clinkTime + 0.002);
+      clinkGain.gain.exponentialRampToValueAtTime(0.0001, clinkTime + 0.04); // Extremely rapid decay (40ms)
+
+      osc1.connect(clinkGain);
+      osc2.connect(clinkGain);
+      clinkGain.connect(this.ctx.destination);
+
+      osc1.start(clinkTime);
+      osc2.start(clinkTime);
+      osc1.stop(clinkTime + 0.05);
+      osc2.stop(clinkTime + 0.05);
+    });
+  }
+
   // Helper to create a mono noise buffer
   createNoiseBuffer(duration) {
     const sampleRate = this.ctx.sampleRate;

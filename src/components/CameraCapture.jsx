@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Camera, Upload, RotateCw, ArrowLeft, Check, RefreshCw } from 'lucide-react';
 import { audioManager } from '../utils/audioManager';
+import { LAYOUTS } from '../utils/layoutConfig';
 
 const CameraCapture = ({ layout, onBack, onComplete }) => {
   const videoRef = useRef(null);
@@ -14,8 +15,9 @@ const CameraCapture = ({ layout, onBack, onComplete }) => {
   const [isCapturing, setIsCapturing] = useState(false); // Snap chain is running
   const [showReview, setShowReview] = useState(false); // Review overlay state
   const [cameraError, setCameraError] = useState(null);
+  const [captureMode, setCaptureMode] = useState(null); // null, 'camera', 'upload'
 
-  const totalSnapsNeeded = layout === 'single' ? 1 : 3;
+  const totalSnapsNeeded = LAYOUTS[layout]?.photoCount || 1;
 
   // Initialize and request camera stream
   const startCamera = async (mode) => {
@@ -44,9 +46,11 @@ const CameraCapture = ({ layout, onBack, onComplete }) => {
     }
   };
 
-  // Start camera on mount or facingMode switch
+  // Start camera on mount or facingMode switch (only if captureMode is 'camera')
   useEffect(() => {
-    startCamera(facingMode);
+    if (captureMode === 'camera') {
+      startCamera(facingMode);
+    }
     
     // Stop all tracks on unmount to prevent camera LED remaining active (memory leak fix)
     return () => {
@@ -54,7 +58,7 @@ const CameraCapture = ({ layout, onBack, onComplete }) => {
         stream.getTracks().forEach(track => track.stop());
       }
     };
-  }, [facingMode]);
+  }, [facingMode, captureMode]);
 
   // General unmount track cleanup
   useEffect(() => {
@@ -134,10 +138,10 @@ const CameraCapture = ({ layout, onBack, onComplete }) => {
     const videoHeight = video.videoHeight;
     const videoAspect = videoWidth / videoHeight;
 
-    // Aspect ratios: 1:1 for Polaroid, 170:140 for Strip Box
-    const targetAspect = layout === 'single' ? 1.0 : 170 / 140;
-    const targetWidth = layout === 'single' ? 600 : 510;
-    const targetHeight = layout === 'single' ? 600 : 420;
+    const layoutCfg = LAYOUTS[layout] || LAYOUTS.single;
+    const targetAspect = layoutCfg.photoSlots[0].aspect;
+    const targetWidth = layout === 'single' ? 600 : layout === 'digicam' ? 700 : 900;
+    const targetHeight = Math.round(targetWidth / targetAspect);
 
     const offscreenCanvas = document.createElement('canvas');
     offscreenCanvas.width = targetWidth;
@@ -176,45 +180,100 @@ const CameraCapture = ({ layout, onBack, onComplete }) => {
   };
 
   const handleRejectPhotos = () => {
-    // Restart camera stream
+    // Restart camera stream if using live camera
     setShowReview(false);
     setTempPhotos([]);
     setCurrentSnapIndex(0);
-    startCamera(facingMode);
+    if (captureMode === 'camera') {
+      startCamera(facingMode);
+    }
   };
 
-  const handleFileUpload = (e) => {
+  // Helper to center-crop uploaded images to the target template aspect ratio
+  const cropImageToAspect = (dataUrl, aspect) => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+        
+        const imgAspect = img.width / img.height;
+        let sw = img.width;
+        let sh = img.height;
+        let sx = 0;
+        let sy = 0;
+
+        if (imgAspect > aspect) {
+          sw = img.height * aspect;
+          sx = (img.width - sw) / 2;
+        } else if (imgAspect < aspect) {
+          sh = img.width / aspect;
+          sy = (img.height - sh) / 2;
+        }
+
+        // Output sizes matching standard high-res templates
+        const targetWidth = layout === 'single' ? 600 : layout === 'digicam' ? 700 : 900;
+        const targetHeight = Math.round(targetWidth / aspect);
+
+        canvas.width = targetWidth;
+        canvas.height = targetHeight;
+
+        // Draw center-cropped portion onto offscreen canvas
+        ctx.drawImage(img, sx, sy, sw, sh, 0, 0, targetWidth, targetHeight);
+        resolve(canvas.toDataURL('image/png'));
+      };
+      img.onerror = () => {
+        resolve(dataUrl); // Fallback to raw if image failed to load/parse
+      };
+      img.src = dataUrl;
+    });
+  };
+
+  const handleFileUpload = async (e) => {
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
-    // If they choose film strip, they can upload multiple files or we guide them one by one.
-    // To make it super simple, we let them upload files and add them to tempPhotos
-    const newPhotos = [];
     const filesArray = Array.from(files).slice(0, totalSnapsNeeded);
+    const targetAspect = LAYOUTS[layout]?.photoSlots[0].aspect || 1.0;
     
-    let loadedCount = 0;
-    filesArray.forEach((file, index) => {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        newPhotos[index] = event.target.result;
-        loadedCount += 1;
-        if (loadedCount === filesArray.length) {
-          // If they uploaded fewer than needed, fill the rest with duplicate or leave empty?
-          // Let's require them to upload the total needed, or just pad it
-          const finalPhotos = [...newPhotos];
-          while (finalPhotos.length < totalSnapsNeeded) {
-            finalPhotos.push(newPhotos[0] || ''); // pad with first photo
+    // Read and crop all files in parallel
+    const readAndCropPromises = filesArray.map((file) => {
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = async (event) => {
+          try {
+            const cropped = await cropImageToAspect(event.target.result, targetAspect);
+            resolve(cropped);
+          } catch (err) {
+            console.error('Cropping failed:', err);
+            resolve(event.target.result); // Fallback to raw dataURL
           }
-          setTempPhotos(finalPhotos);
-          setShowReview(true);
-
-          if (stream) {
-            stream.getTracks().forEach(track => track.stop());
-          }
-        }
-      };
-      reader.readAsDataURL(file);
+        };
+        reader.onerror = () => resolve('');
+        reader.readAsDataURL(file);
+      });
     });
+
+    const croppedPhotos = await Promise.all(readAndCropPromises);
+    const validPhotos = croppedPhotos.filter(p => p !== '');
+
+    if (validPhotos.length === 0) {
+      alert('Could not load any selected files. Please try again.');
+      return;
+    }
+
+    // Pad if fewer photos uploaded than required
+    const finalPhotos = [...validPhotos];
+    while (finalPhotos.length < totalSnapsNeeded) {
+      finalPhotos.push(validPhotos[0] || ''); // pad with first photo
+    }
+
+    setTempPhotos(finalPhotos);
+    setShowReview(true);
+
+    if (stream) {
+      stream.getTracks().forEach(track => track.stop());
+    }
 
     e.target.value = ''; // reset file input
   };
@@ -225,20 +284,125 @@ const CameraCapture = ({ layout, onBack, onComplete }) => {
     }
   };
 
+  // 1. Photo Source Picker Screen
+  if (!captureMode) {
+    return (
+      <div className="camera-container" style={{ justifyContent: 'center', alignItems: 'center', padding: '20px' }}>
+        <div style={styles.cameraHeader}>
+          <button onClick={onBack} style={styles.backBtn}>
+            <ArrowLeft size={20} />
+            <span>Back</span>
+          </button>
+          <div style={styles.headerTitle}>
+            {layout === 'single' ? 'Polaroid Booth' : `Film Strip Booth`}
+          </div>
+        </div>
+
+        <div style={styles.sourceSelectionBox}>
+          <div style={styles.sourceSelectionTitle}>Choose Photo Source</div>
+          <p style={styles.sourceSelectionSubtitle}>
+            {layout === 'single' 
+              ? 'Snap a fresh photo using your camera or upload a square photo from your library.' 
+              : 'Snap 3 photos sequentially or upload 3 photos from your device.'}
+          </p>
+
+          <div style={styles.sourceButtonGrid}>
+            <button 
+              className="btn-gold" 
+              onClick={() => setCaptureMode('camera')}
+              style={styles.sourceBtn}
+            >
+              <Camera size={24} />
+              <span>📸 Use Camera</span>
+            </button>
+
+            <button 
+              className="btn-outline" 
+              onClick={() => {
+                setCaptureMode('upload');
+                setTimeout(() => triggerUpload(), 100);
+              }}
+              style={styles.sourceBtn}
+            >
+              <Upload size={24} />
+              <span>📤 Upload Photo(s)</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // 2. Upload Prompt Screen (if 'upload' chosen but no photos selected yet)
+  if (captureMode === 'upload' && tempPhotos.length === 0) {
+    return (
+      <div className="camera-container" style={{ justifyContent: 'center', alignItems: 'center', padding: '20px' }}>
+        <div style={styles.cameraHeader}>
+          <button onClick={() => setCaptureMode(null)} style={styles.backBtn}>
+            <ArrowLeft size={20} />
+            <span>Back</span>
+          </button>
+          <div style={styles.headerTitle}>
+            Upload Photos
+          </div>
+        </div>
+
+        <div style={styles.sourceSelectionBox}>
+          <div style={styles.sourceSelectionTitle}>Upload Photo(s)</div>
+          <p style={styles.sourceSelectionSubtitle}>
+            Please select {totalSnapsNeeded} photo{totalSnapsNeeded > 1 ? 's' : ''} for your layout.
+          </p>
+
+          <div style={{ margin: '40px 0', textAlign: 'center' }}>
+            <button 
+              className="btn-gold" 
+              onClick={triggerUpload}
+              style={{ padding: '16px 32px', fontSize: '1.1rem', borderRadius: '30px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', margin: '0 auto' }}
+            >
+              <Upload size={20} />
+              <span>Select Files</span>
+            </button>
+          </div>
+
+          <button 
+            className="btn-outline" 
+            onClick={() => setCaptureMode('camera')}
+            style={{ width: '100%', borderRadius: '20px' }}
+          >
+            <span>Or switch to live camera</span>
+          </button>
+        </div>
+
+        {/* Invisible file input */}
+        <input
+          type="file"
+          ref={fileInputRef}
+          onChange={handleFileUpload}
+          accept="image/*"
+          multiple={totalSnapsNeeded > 1}
+          style={{ display: 'none' }}
+        />
+      </div>
+    );
+  }
+
+  // 3. Normal Camera view / Review view
   return (
     <div className="camera-container">
       {/* Top Header Bar */}
       <div style={styles.cameraHeader}>
-        <button onClick={onBack} style={styles.backBtn} disabled={isCapturing}>
+        <button onClick={() => setCaptureMode(null)} style={styles.backBtn} disabled={isCapturing}>
           <ArrowLeft size={20} />
           <span>Back</span>
         </button>
         <div style={styles.headerTitle}>
           {layout === 'single' ? 'Polaroid Booth' : `Film Strip Booth`}
         </div>
-        <button className="camera-btn" onClick={toggleCamera} disabled={cameraError || isCapturing} style={{ background: 'none', border: 'none', color: '#fff', opacity: (cameraError || isCapturing) ? 0.4 : 1, width: 'auto', height: 'auto' }}>
-          <RotateCw size={20} />
-        </button>
+        {captureMode === 'camera' && (
+          <button className="camera-btn" onClick={toggleCamera} disabled={cameraError || isCapturing} style={{ background: 'none', border: 'none', color: '#fff', opacity: (cameraError || isCapturing) ? 0.4 : 1, width: 'auto', height: 'auto' }}>
+            <RotateCw size={20} />
+          </button>
+        )}
       </div>
 
       {/* Top-Right Capture Indicators [✓] [ ] [ ] */}
@@ -313,7 +477,7 @@ const CameraCapture = ({ layout, onBack, onComplete }) => {
           <div className="review-title">Review Snaps</div>
           <div className="review-preview-container">
             <div className="review-preview-frame">
-              {layout === 'single' ? (
+              {layout === 'single' && (
                 // Polaroid Preview mock
                 <div style={styles.reviewPolaroidFrame}>
                   <img 
@@ -322,11 +486,41 @@ const CameraCapture = ({ layout, onBack, onComplete }) => {
                     alt="Polaroid capture" 
                   />
                 </div>
-              ) : (
-                // Film Strip Preview mock (stack of 3 photos)
+              )}
+              {layout === 'digicam' && (
+                // Digicam Preview mock with overlay
+                <div style={styles.reviewDigicamFrame}>
+                  <img 
+                    src={tempPhotos[0]} 
+                    style={styles.reviewDigicamImg} 
+                    alt="Digicam capture" 
+                  />
+                  <img 
+                    src="/retro_camera_frame.png"
+                    style={styles.reviewDigicamOverlay}
+                    alt="Camera overlay"
+                  />
+                </div>
+              )}
+              {layout === 'strip' && (
+                // Film Strip Preview mock (3 photos)
                 <div style={styles.reviewStripFrame}>
-                  {tempPhotos.map((url, i) => (
+                  {tempPhotos.slice(0, 3).map((url, i) => (
                     <div key={i} style={styles.reviewStripSlot}>
+                      <img 
+                        src={url} 
+                        style={styles.reviewStripImg} 
+                        alt={`Snap ${i+1}`} 
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+              {layout === 'strip5' && (
+                // Film Strip Preview mock (5 photos)
+                <div style={{ ...styles.reviewStripFrame, gap: '6px', padding: '8px' }}>
+                  {tempPhotos.slice(0, 5).map((url, i) => (
+                    <div key={i} style={{ ...styles.reviewStripSlot, height: '70px' }}>
                       <img 
                         src={url} 
                         style={styles.reviewStripImg} 
@@ -405,6 +599,37 @@ const styles = {
     objectFit: 'cover',
     border: '1px solid #ddd'
   },
+  reviewDigicamFrame: {
+    width: '280px',
+    height: '280px',
+    position: 'relative',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    boxShadow: '0 10px 30px rgba(0,0,0,0.5)',
+    overflow: 'hidden',
+    borderRadius: '12px',
+    backgroundColor: '#fff'
+  },
+  reviewDigicamImg: {
+    position: 'absolute',
+    left: '37.7%', // Match 386 / 1024
+    top: '39.2%',  // Match 402 / 1024
+    width: '38.5%', // Match 394 / 1024
+    height: '32.5%', // Match 333 / 1024
+    objectFit: 'cover',
+    zIndex: 1
+  },
+  reviewDigicamOverlay: {
+    position: 'absolute',
+    left: 0,
+    top: 0,
+    width: '100%',
+    height: '100%',
+    objectFit: 'contain',
+    zIndex: 2,
+    pointerEvents: 'none'
+  },
   // Film strip review frame (matte black style)
   reviewStripFrame: {
     width: '180px',
@@ -426,6 +651,52 @@ const styles = {
     width: '100%',
     height: '100%',
     objectFit: 'cover'
+  },
+  sourceSelectionBox: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(28, 14, 5, 0.95)',
+    border: '3px solid var(--color-gold)',
+    boxShadow: '0 8px 32px rgba(0, 0, 0, 0.8)',
+    borderRadius: '16px',
+    padding: '32px 24px',
+    maxWidth: '360px',
+    width: '90%',
+    textAlign: 'center',
+    margin: 'auto 0'
+  },
+  sourceSelectionTitle: {
+    fontFamily: 'Bungee',
+    fontSize: '1.4rem',
+    color: 'var(--color-gold)',
+    marginBottom: '12px',
+    textShadow: '0 0 8px rgba(255, 204, 0, 0.4)'
+  },
+  sourceSelectionSubtitle: {
+    fontFamily: 'Outfit',
+    fontSize: '0.9rem',
+    color: '#e2d9d5',
+    lineHeight: '1.4',
+    marginBottom: '28px'
+  },
+  sourceButtonGrid: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '14px',
+    width: '100%'
+  },
+  sourceBtn: {
+    width: '100%',
+    padding: '16px 20px',
+    fontSize: '1rem',
+    fontWeight: '700',
+    borderRadius: '30px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: '10px'
   }
 };
 

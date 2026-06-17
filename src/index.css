@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Bungee&family=Bungee+Shade&family=Caveat:wght@400;700&family=Courier+Prime:ital,wght@0,400;0,700;1,400;1,700&family=Outfit:wght@300;400;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Bungee&family=Bungee+Shade&family=Caveat:wght@400;700&family=Courier+Prime:ital,wght@0,400;0,700;1,400;1,700&family=Outfit:wght@300;400;600;700&family=Pacifico&display=swap');
 
 :root {
   --color-wood-dark: #1e0b02;
@@ -315,16 +315,39 @@ html, body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  padding: 20px;
-  gap: 24px;
+  justify-content: flex-start;
+  padding: 24px 20px;
+  gap: 20px;
   z-index: 5;
+  width: 100%;
+  min-height: 0;
+  height: 100%;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Custom scrollbars for picker container */
+.picker-container::-webkit-scrollbar {
+  width: 8px;
+}
+.picker-container::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 4px;
+}
+.picker-container::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(255, 204, 0, 0.25) 0%, rgba(255, 204, 0, 0.1) 100%);
+  border-radius: 4px;
+  border: 1px solid rgba(255, 204, 0, 0.1);
+}
+.picker-container::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(255, 204, 0, 0.55) 0%, rgba(255, 204, 0, 0.35) 100%);
+  border-color: var(--color-gold);
 }
 
 .picker-intro {
   text-align: center;
-  max-width: 340px;
-  margin-bottom: 8px;
+  max-width: 380px;
+  margin-bottom: 4px;
 }
 
 .picker-intro h2 {
@@ -338,48 +361,105 @@ html, body {
 }
 
 .picker-intro p {
-  font-size: 0.95rem;
+  font-size: 0.9rem;
   color: #e2d9d5;
   line-height: 1.4;
 }
 
 .picker-options {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: 1fr;
   gap: 20px;
   width: 100%;
-  max-width: 340px;
+  max-width: 320px;
+  padding-bottom: 40px;
 }
 
-@media (min-height: 700px) {
+/* Tablet screens: 2x2 Grid */
+@media (min-width: 580px) and (max-width: 959px) {
   .picker-options {
-    flex-direction: row;
-    max-width: 500px;
-    justify-content: center;
+    grid-template-columns: repeat(2, 1fr);
+    max-width: 640px;
+    gap: 24px;
+  }
+}
+
+/* Laptop/Desktop screens: 4 Columns Wide Row */
+@media (min-width: 960px) {
+  .picker-options {
+    grid-template-columns: repeat(4, 1fr);
+    max-width: 1080px;
+    gap: 24px;
   }
 }
 
 .picker-card {
-  flex: 1;
-  background: rgba(18, 9, 3, 0.85);
-  border: 2px solid rgba(255, 204, 0, 0.2);
-  border-radius: 12px;
-  padding: 16px;
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(135deg, rgba(28, 14, 5, 0.92) 0%, rgba(16, 8, 3, 0.96) 100%);
+  border: 2px solid rgba(255, 204, 0, 0.15);
+  border-radius: 16px;
+  padding: 24px 16px;
   display: flex;
   flex-direction: column;
   align-items: center;
+  justify-content: space-between;
+  min-height: 270px;
   cursor: pointer;
-  transition: transform 0.2s, border-color 0.2s, box-shadow 0.2s;
-  box-shadow: 0 6px 15px rgba(0, 0, 0, 0.4);
+  transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1), 
+              border-color 0.3s ease, 
+              box-shadow 0.3s ease;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+/* Sweeping glossy light beam overlay */
+.picker-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -150%;
+  width: 150%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.04) 30%,
+    rgba(255, 255, 255, 0.08) 50%,
+    rgba(255, 255, 255, 0.04) 70%,
+    transparent 100%
+  );
+  transform: skewX(-20deg);
+  transition: none;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.picker-card:hover::before {
+  left: 150%;
+  transition: left 0.85s ease-in-out;
+}
+
+.picker-mock-wrapper {
+  height: 140px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  margin-bottom: 8px;
+  position: relative;
+  z-index: 2;
+}
+
+.picker-card:hover {
+  border-color: var(--color-gold);
+  transform: translateY(-8px) scale(1.02);
+  box-shadow: 0 20px 40px rgba(255, 204, 0, 0.12), 
+              0 0 20px var(--color-gold-glow),
+              inset 0 1px 0 rgba(255, 255, 255, 0.1);
 }
 
 .picker-card:active {
-  transform: scale(0.97);
-}
-
-.picker-card.active, .picker-card:hover {
-  border-color: var(--color-gold);
-  box-shadow: 0 0 15px var(--color-gold-glow);
+  transform: translateY(-2px) scale(0.98);
 }
 
 .picker-card-title {
@@ -390,13 +470,21 @@ html, body {
   color: var(--color-gold);
   text-transform: uppercase;
   letter-spacing: 1px;
+  text-align: center;
+  position: relative;
+  z-index: 2;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
 }
 
 .picker-card-desc {
-  font-size: 0.8rem;
-  color: #cccccc;
-  margin-top: 4px;
+  font-size: 0.78rem;
+  color: #b3a59e;
+  margin-top: 6px;
+  line-height: 1.4;
   text-align: center;
+  max-width: 180px;
+  position: relative;
+  z-index: 2;
 }
 
 /* Polaroid Template Preview Mock */
@@ -436,6 +524,142 @@ html, body {
   flex: 1;
   background-color: #2c2c2e;
   border-radius: 2px;
+  border: 1px dashed rgba(255, 255, 255, 0.2);
+}
+
+/* Smooth transitions for preview mocks on card hover */
+.polaroid-preview-mock,
+.strip-preview-mock,
+.digicam-preview-mock,
+.strip5-preview-mock {
+  transition: transform 0.4s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.4s ease;
+}
+
+/* Micro-animations on card hover */
+.picker-card:hover .polaroid-preview-mock {
+  transform: scale(1.06) rotate(2deg);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+}
+
+.picker-card:hover .strip-preview-mock {
+  transform: scale(1.06) rotate(-2deg);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+}
+
+.picker-card:hover .digicam-preview-mock {
+  transform: scale(1.06) rotate(1.5deg);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+}
+
+.picker-card:hover .strip5-preview-mock {
+  transform: scale(1.06) rotate(-1.5deg);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.45);
+}
+
+/* Digicam Preview Mock */
+.digicam-preview-mock {
+  width: 100px;
+  height: 80px;
+  background: linear-gradient(135deg, #e6e6e6 0%, #b3b3b3 50%, #808080 100%);
+  border-radius: 8px;
+  border: 2px solid #ffffff;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+}
+
+.digicam-preview-lens {
+  position: absolute;
+  left: 10px;
+  top: 25px;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: radial-gradient(circle, #222 40%, #555 70%, #111 100%);
+  border: 2px solid #ccc;
+}
+
+.digicam-preview-inner {
+  width: 42px;
+  height: 32px;
+  background-color: #d1cbd4;
+  border: 1px dashed rgba(0,0,0,0.3);
+  border-radius: 2px;
+  position: absolute;
+  right: 8px;
+  top: 24px;
+}
+
+.digicam-preview-flash {
+  position: absolute;
+  left: 12px;
+  top: 10px;
+  width: 14px;
+  height: 8px;
+  background-color: #ffffff;
+  border-radius: 2px;
+  box-shadow: 0 0 4px #ffffff;
+}
+
+/* 5-Photo Film Strip Preview Mock */
+.strip5-preview-mock {
+  width: 60px;
+  height: 135px;
+  background-color: #111111;
+  border-radius: 4px;
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.3);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  position: relative;
+}
+
+.strip5-preview-sprockets-left,
+.strip5-preview-sprockets-right {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-around;
+  padding: 4px 0;
+}
+
+.strip5-preview-sprockets-left {
+  left: 2px;
+}
+
+.strip5-preview-sprockets-right {
+  right: 2px;
+}
+
+.strip5-sprocket-hole {
+  width: 3px;
+  height: 5px;
+  background-color: #ffffff;
+  border-radius: 1px;
+  opacity: 0.8;
+}
+
+.strip5-preview-inner-container {
+  flex: 1;
+  margin: 0 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  justify-content: space-between;
+}
+
+.strip5-preview-inner {
+  height: 18px;
+  background-color: #2c2c2e;
+  border-radius: 1px;
   border: 1px dashed rgba(255, 255, 255, 0.2);
 }
 
@@ -497,8 +721,8 @@ html, body {
 }
 
 .camera-overlay-frame.strip {
-  width: 180px;
-  height: 380px;
+  width: 240px;
+  height: 320px;
   border-radius: 4px;
 }
 
@@ -750,6 +974,7 @@ html, body {
   flex-direction: column;
   align-items: center;
   width: 68px;
+  flex-shrink: 0;
   cursor: pointer;
   transition: transform 0.15s;
 }
@@ -791,6 +1016,7 @@ html, body {
   justify-content: center;
   width: 52px;
   height: 52px;
+  flex-shrink: 0;
   background-color: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 8px;
@@ -811,6 +1037,7 @@ html, body {
   justify-content: center;
   align-items: center;
   padding: 8px 16px;
+  flex-shrink: 0;
   background-color: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 20px;

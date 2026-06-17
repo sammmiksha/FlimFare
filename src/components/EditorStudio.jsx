@@ -1,168 +1,565 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as fabric from 'fabric';
-import { Type, Sparkles, Smile, Trash2, ArrowLeft, ArrowRight } from 'lucide-react';
+import { Type, Sparkles, Smile, Palette, Trash2, ArrowLeft, ArrowRight, Plus, X } from 'lucide-react';
+import { getCustomStickers, addCustomSticker, deleteCustomSticker } from '../utils/stickerStore';
+import { LAYOUTS } from '../utils/layoutConfig';
+
+// Vite dynamic glob import of all stickers inside src/assets/
+const stickerModules = import.meta.glob('../assets/*.png', { eager: true });
+const EXCLUDED_IMAGES = ['hero', 'tornpaper'];
+const ASSET_STICKERS = Object.keys(stickerModules)
+  .filter((key) => {
+    const filename = key.split('/').pop().toLowerCase();
+    return !EXCLUDED_IMAGES.some(ex => filename.includes(ex));
+  })
+  .map((key) => {
+    return stickerModules[key].default || stickerModules[key];
+  });
 
 const EditorStudio = ({ layout, photos, onBack, onGeneratePrint }) => {
   const canvasRef = useRef(null);
   const fabricCanvasRef = useRef(null);
-  const [activeTab, setActiveTab] = useState('filters');
+  const [activeTab, setActiveTab] = useState(layout === 'digicam' ? 'filters' : 'themes');
   const [activeFilter, setActiveFilter] = useState('none');
   
+  // Dynamic layout configuration
+  const layoutCfg = LAYOUTS[layout] || LAYOUTS.single;
+
+  const [zoomLevel, setZoomLevel] = useState(1.0);
+
+  const handleResetZoom = () => {
+    if (!fabricCanvasRef.current) return;
+    const canvas = fabricCanvasRef.current;
+    canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
+    canvas.setZoom(1.0);
+    setZoomLevel(1.0);
+    canvas.requestRenderAll();
+  };
+
+  // Custom stickers state
+  const [customStickers, setCustomStickers] = useState([]);
+  const customStickerInputRef = useRef(null);
+
+  // Load custom stickers from IndexedDB on mount
+  useEffect(() => {
+    const loadCustomStickers = async () => {
+      const stickers = await getCustomStickers();
+      setCustomStickers(stickers);
+    };
+    loadCustomStickers();
+  }, []);
+
+  const handleCustomStickerUpload = async (e) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    const file = files[0];
+    if (!file.type.startsWith('image/')) {
+      alert('Please select an image file (.png, .jpg, etc).');
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        const dataUrl = event.target.result;
+        const newSticker = await addCustomSticker(dataUrl, file.name);
+        setCustomStickers(prev => [newSticker, ...prev]);
+        
+        // Auto-add custom sticker to fabric canvas upon upload
+        addPremiumSticker(dataUrl);
+      } catch (err) {
+        console.error('Error saving sticker:', err);
+        alert('Failed to save sticker in database.');
+      }
+    };
+    reader.readAsDataURL(file);
+    e.target.value = ''; // Reset input
+  };
+
+  const handleDeleteCustomSticker = async (e, id) => {
+    e.stopPropagation(); // Stop click from placing the sticker
+    if (!confirm('Are you sure you want to delete this custom sticker?')) return;
+    try {
+      await deleteCustomSticker(id);
+      setCustomStickers(prev => prev.filter(s => s.id !== id));
+    } catch (err) {
+      console.error('Error deleting sticker:', err);
+      alert('Failed to delete sticker.');
+    }
+  };
+  
+  // Custom caption state
+  const defaultCaption = () => {
+    const d = new Date();
+    return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`;
+  };
+  const [caption, setCaption] = useState(defaultCaption());
+
+  // Simplified Frame themes list
+  const FRAME_THEMES = [
+    { id: 'white', name: 'Classic White', bg: '#ffffff', text: '#111111' },
+    { id: 'cream', name: 'Vintage Cream', bg: '#fcfbe3', text: '#3d1c02' },
+    { id: 'pink', name: 'Pink Kawaii', bg: '#ffd6ea', text: '#d81b60' },
+    { id: 'black', name: 'Black Film Roll', bg: '#111111', text: '#ffffff' }
+  ];
+
+  // Default to Black theme if the template background is black (like strip5)
+  const defaultTheme = () => {
+    if (layoutCfg.defaultBg === '#111111') {
+      return FRAME_THEMES.find(t => t.id === 'black') || FRAME_THEMES[3];
+    }
+    return FRAME_THEMES[0];
+  };
+
+  const [activeTheme, setActiveTheme] = useState(defaultTheme());
+
   // Object limits tracking
   const [stickerCount, setStickerCount] = useState(0);
   const [textCount, setTextCount] = useState(0);
   const [hasSelection, setHasSelection] = useState(false);
 
-  const MAX_STICKERS = 20;
-  const MAX_TEXTS = 10;
-
-  // Viewport dimensions
-  const canvasConfig = {
-    single: { width: 340, height: 400, bg: '#ffffff' },
-    strip: { width: 200, height: 500, bg: '#111111' }
-  };
+  const MAX_STICKERS = layoutCfg.maxStickers;
+  const MAX_TEXTS = layoutCfg.maxTexts;
 
   useEffect(() => {
-    // 1. Initialize Fabric Canvas
-    const currentConfig = canvasConfig[layout];
+    // 1. Initialize Fabric Canvas dynamically based on layout config
     const canvas = new fabric.Canvas(canvasRef.current, {
-      width: currentConfig.width,
-      height: currentConfig.height,
-      backgroundColor: currentConfig.bg,
-      allowTouchScrolling: false // Prevent page scrolling/bouncing on mobile touch
+      width: layoutCfg.canvasWidth,
+      height: layoutCfg.canvasHeight,
+      backgroundColor: layout === 'digicam' ? null : activeTheme.bg,
+      allowTouchScrolling: false,
+      enableRetinaScaling: false // Prevent device pixel ratio/Retina clipping and offset issues
     });
 
     fabricCanvasRef.current = canvas;
 
-    // Set selection handlers to toggle the delete button
+    // Selection handlers
     canvas.on('selection:created', () => setHasSelection(true));
     canvas.on('selection:updated', () => setHasSelection(true));
     canvas.on('selection:cleared', () => setHasSelection(false));
     canvas.on('object:added', updateObjectCounts);
     canvas.on('object:removed', updateObjectCounts);
 
-    // 2. Render layout frames and insert photos
-    setupTemplateAndPhotos(canvas);
+    // 2. Render layout frames, photos, date stamps, and captions
+    setupWorkspace(canvas);
+
+    // 3. PC Keyboard Spacebar Panning & Mouse Wheel Zoom
+    let spacePressed = false;
+    let isPanning = false;
+    let lastX = 0;
+    let lastY = 0;
+
+    const handleKeyDown = (e) => {
+      if (e.code === 'Space') {
+        spacePressed = true;
+        canvas.defaultCursor = 'grab';
+        canvas.hoverCursor = 'grab';
+        e.preventDefault();
+      }
+    };
+
+    const handleKeyUp = (e) => {
+      if (e.code === 'Space') {
+        spacePressed = false;
+        canvas.defaultCursor = 'default';
+        canvas.hoverCursor = 'move';
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+
+    canvas.on('mouse:down', (opt) => {
+      const evt = opt.e;
+      // Allow panning with space pressed, middle mouse button
+      if (spacePressed || evt.button === 1) {
+        isPanning = true;
+        canvas.defaultCursor = 'grabbing';
+        canvas.hoverCursor = 'grabbing';
+        lastX = evt.clientX || (evt.touches && evt.touches[0].clientX);
+        lastY = evt.clientY || (evt.touches && evt.touches[0].clientY);
+      }
+    });
+
+    canvas.on('mouse:move', (opt) => {
+      if (isPanning) {
+        const evt = opt.e;
+        const clientX = evt.clientX || (evt.touches && evt.touches[0].clientX);
+        const clientY = evt.clientY || (evt.touches && evt.touches[0].clientY);
+        const vpt = canvas.viewportTransform;
+        
+        vpt[4] += clientX - lastX;
+        vpt[5] += clientY - lastY;
+        
+        canvas.requestRenderAll();
+        lastX = clientX;
+        lastY = clientY;
+      }
+    });
+
+    canvas.on('mouse:up', () => {
+      if (isPanning) {
+        isPanning = false;
+        canvas.defaultCursor = spacePressed ? 'grab' : 'default';
+        canvas.hoverCursor = 'move';
+      }
+    });
+
+    canvas.on('mouse:wheel', (opt) => {
+      const delta = opt.e.deltaY;
+      let zoom = canvas.getZoom();
+      zoom *= 0.999 ** delta;
+      if (zoom > 4) zoom = 4;
+      if (zoom < 1) {
+        zoom = 1;
+        canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
+      } else {
+        canvas.zoomToPoint(new fabric.Point(opt.e.offsetX, opt.e.offsetY), zoom);
+      }
+      setZoomLevel(zoom);
+      opt.e.preventDefault();
+      opt.e.stopPropagation();
+    });
+
+    // 4. Mobile Two-Finger Pinch-to-Zoom & Drag-to-Pan
+    let lastPinchDist = 0;
+    let isPinching = false;
+    let touchStartZoom = 1;
+    let touchStartCenter = { x: 0, y: 0 };
+    let lastTouchX = 0;
+    let lastTouchY = 0;
+    let isTouchPanning = false;
+
+    const getDistance = (t1, t2) => {
+      return Math.sqrt((t1.clientX - t2.clientX) ** 2 + (t1.clientY - t2.clientY) ** 2);
+    };
+
+    const getCenter = (t1, t2) => {
+      return {
+        x: (t1.clientX + t2.clientX) / 2,
+        y: (t1.clientY + t2.clientY) / 2
+      };
+    };
+
+    const nativeCanvas = canvasRef.current;
+
+    const handleTouchStart = (e) => {
+      if (e.touches.length === 2) {
+        isPinching = true;
+        isTouchPanning = false;
+        lastPinchDist = getDistance(e.touches[0], e.touches[1]);
+        touchStartZoom = canvas.getZoom();
+        const center = getCenter(e.touches[0], e.touches[1]);
+        
+        const rect = nativeCanvas.getBoundingClientRect();
+        touchStartCenter = {
+          x: center.x - rect.left,
+          y: center.y - rect.top
+        };
+        e.preventDefault();
+      } else if (e.touches.length === 1 && canvas.getZoom() > 1.0) {
+        isTouchPanning = true;
+        isPinching = false;
+        lastTouchX = e.touches[0].clientX;
+        lastTouchY = e.touches[0].clientY;
+      }
+    };
+
+    const handleTouchMove = (e) => {
+      if (isPinching && e.touches.length === 2) {
+        const dist = getDistance(e.touches[0], e.touches[1]);
+        const scale = dist / lastPinchDist;
+        let zoom = touchStartZoom * scale;
+        
+        if (zoom > 4) zoom = 4;
+        if (zoom < 1) {
+          zoom = 1;
+          canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
+        } else {
+          canvas.zoomToPoint(new fabric.Point(touchStartCenter.x, touchStartCenter.y), zoom);
+        }
+        
+        setZoomLevel(zoom);
+        canvas.requestRenderAll();
+        e.preventDefault();
+      } else if (isTouchPanning && e.touches.length === 1) {
+        const touch = e.touches[0];
+        const dx = touch.clientX - lastTouchX;
+        const dy = touch.clientY - lastTouchY;
+        const vpt = canvas.viewportTransform;
+        
+        vpt[4] += dx;
+        vpt[5] += dy;
+        
+        canvas.requestRenderAll();
+        lastTouchX = touch.clientX;
+        lastTouchY = touch.clientY;
+        e.preventDefault();
+      }
+    };
+
+    const handleTouchEnd = (e) => {
+      if (e.touches.length < 2) {
+        isPinching = false;
+      }
+      if (e.touches.length === 0) {
+        isTouchPanning = false;
+      }
+    };
+
+    nativeCanvas.addEventListener('touchstart', handleTouchStart, { passive: false });
+    nativeCanvas.addEventListener('touchmove', handleTouchMove, { passive: false });
+    nativeCanvas.addEventListener('touchend', handleTouchEnd);
 
     // Cleanup on unmount
     return () => {
+      nativeCanvas.removeEventListener('touchstart', handleTouchStart);
+      nativeCanvas.removeEventListener('touchmove', handleTouchMove);
+      nativeCanvas.removeEventListener('touchend', handleTouchEnd);
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
       canvas.dispose();
+      fabricCanvasRef.current = null;
     };
   }, []);
 
   const updateObjectCounts = () => {
     if (!fabricCanvasRef.current) return;
     const objs = fabricCanvasRef.current.getObjects();
-    
-    // Stickers are shapes/emojis that are selectable
-    const stickers = objs.filter(obj => (obj.type === 'path' || obj.type === 'image' || obj.type === 'text') && obj.selectable && !obj.isTextLayer);
+    const stickers = objs.filter(obj => obj.selectable && !obj.isTextLayer);
     const texts = objs.filter(obj => obj.selectable && obj.isTextLayer);
-
     setStickerCount(stickers.length);
     setTextCount(texts.length);
   };
 
-  const setupTemplateAndPhotos = (canvas) => {
+  const setupWorkspace = (canvas) => {
     const ImageClass = fabric.FabricImage || fabric.Image;
 
-    if (layout === 'single') {
-      // Polaroid structure
-      // Draw a grey placeholder rect first
-      const photoPlaceholder = new fabric.Rect({
-        left: 20,
-        top: 20,
-        width: 300,
-        height: 300,
-        fill: '#f0ede9',
-        selectable: false,
-        evented: false,
-        hoverCursor: 'default'
-      });
-      canvas.add(photoPlaceholder);
+    // Helper function to load captured photo directly into Fabric workspace via static fromURL
+    const addImageToSlot = (photoSrc, slotX, slotY, slotWidth, slotHeight, callback) => {
+      const ImageClass = fabric.FabricImage || fabric.Image;
 
-      // Load 1st snapped photo
-      if (photos[0]) {
-        const imgElement = document.createElement('img');
-        imgElement.src = photos[0];
-        imgElement.onload = () => {
-          const photoImg = new ImageClass(imgElement, {
-            left: 20,
-            top: 20,
+      // Use Fabric's standard fromURL Promise loader (standard for Fabric v7)
+      ImageClass.fromURL(photoSrc).then((photoImg) => {
+        if (!fabricCanvasRef.current) return;
+
+        const imgW = photoImg.width || 1;
+        const imgH = photoImg.height || 1;
+
+        photoImg.set({
+          left: slotX,
+          top: slotY,
+          originX: 'left',
+          originY: 'top',
+          width: imgW,
+          height: imgH,
+          scaleX: slotWidth / imgW,
+          scaleY: slotHeight / imgH,
+          selectable: false,
+          evented: false,
+          hoverCursor: 'default',
+          isPhotoLayer: true
+        });
+
+        canvas.add(photoImg);
+        if (callback) callback();
+      }).catch((err) => {
+        console.error('Error loading image in Fabric:', err);
+        if (callback) callback();
+      });
+    };
+
+    // Load photo slots dynamically from layoutConfig
+    let completedSlots = 0;
+    const totalExpected = layoutCfg.photoSlots.length;
+
+    // Check if we need to draw a background camera overlay
+    const loadOverlay = () => {
+      if (layoutCfg.overlayImage) {
+        ImageClass.fromURL(layoutCfg.overlayImage).then((overlayImg) => {
+          if (!fabricCanvasRef.current) return;
+          overlayImg.set({
+            left: 0,
+            top: 0,
+            originX: 'left',
+            originY: 'top',
+            width: overlayImg.width || 1024,
+            height: overlayImg.height || 1024,
+            scaleX: layoutCfg.canvasWidth / (overlayImg.width || 1024),
+            scaleY: layoutCfg.canvasHeight / (overlayImg.height || 1024),
             selectable: false,
             evented: false,
             hoverCursor: 'default',
-            isPhotoLayer: true // Custom tag for applying filters
+            isOverlayLayer: true
           });
-          // Fit photo in 300x300 slot
-          photoImg.scaleX = 300 / imgElement.naturalWidth;
-          photoImg.scaleY = 300 / imgElement.naturalHeight;
-          canvas.add(photoImg);
-          // Bring borders to front
-          drawPolaroidBorders(canvas);
-          canvas.renderAll();
-        };
-      } else {
-        drawPolaroidBorders(canvas);
-      }
-
-    } else if (layout === 'strip') {
-      // Film strip layout slots
-      const gap = 15;
-      const boxHeight = 140;
-      const boxWidth = 170;
-
-      // Draw background placeholders
-      for (let i = 0; i < 3; i++) {
-        const placeholder = new fabric.Rect({
-          left: 15,
-          top: gap + i * (boxHeight + gap),
-          width: boxWidth,
-          height: boxHeight,
-          fill: '#1a1a1c',
-          selectable: false,
-          evented: false,
-          hoverCursor: 'default'
-        });
-        canvas.add(placeholder);
-
-        // Load photo for this index
-        if (photos[i]) {
-          const imgElement = document.createElement('img');
-          imgElement.src = photos[i];
-          const currentTop = gap + i * (boxHeight + gap);
+          canvas.add(overlayImg);
           
-          imgElement.onload = () => {
-            const photoImg = new ImageClass(imgElement, {
-              left: 15,
-              top: currentTop,
-              selectable: false,
-              evented: false,
-              hoverCursor: 'default',
-              isPhotoLayer: true // Tag for filters
-            });
-            photoImg.scaleX = boxWidth / imgElement.naturalWidth;
-            photoImg.scaleY = boxHeight / imgElement.naturalHeight;
-            canvas.add(photoImg);
-            canvas.renderAll();
-          };
+          if (layoutCfg.showCaption) {
+            createCaptionText(canvas);
+          }
+          canvas.renderAll();
+        }).catch((err) => {
+          console.error('Failed to load layout overlay image:', err);
+          if (layoutCfg.showCaption) {
+            createCaptionText(canvas);
+          }
+          canvas.renderAll();
+        });
+      } else {
+        if (layoutCfg.showCaption) {
+          createCaptionText(canvas);
+        }
+        canvas.renderAll();
+      }
+    };
+
+    // Draw layout specific decorations
+    if (layout === 'single') {
+      // Draw thin frame line between photo and chin
+      const line = new fabric.Line([30, 310, 310, 310], {
+        stroke: 'rgba(0,0,0,0.06)',
+        strokeWidth: 1,
+        selectable: false,
+        evented: false
+      });
+      canvas.add(line);
+    } else if (layoutCfg.drawSprocketHoles) {
+      // Draw film strip sprocket holes dynamically down left and right borders!
+      const sprocketWidth = 12;
+      const sprocketHeight = 16;
+      const gap = 30; // space sprocket holes every 30px
+      const cornerRadius = 2;
+
+      for (let y = 15; y < layoutCfg.canvasHeight - 15; y += gap) {
+        // Left sprocket hole
+        const leftHole = new fabric.Rect({
+          left: 14,
+          top: y,
+          width: sprocketWidth,
+          height: sprocketHeight,
+          rx: cornerRadius,
+          ry: cornerRadius,
+          fill: '#ffffff',
+          selectable: false,
+          evented: false
+        });
+        // Right sprocket hole
+        const rightHole = new fabric.Rect({
+          left: layoutCfg.canvasWidth - 14 - sprocketWidth,
+          top: y,
+          width: sprocketWidth,
+          height: sprocketHeight,
+          rx: cornerRadius,
+          ry: cornerRadius,
+          fill: '#ffffff',
+          selectable: false,
+          evented: false
+        });
+
+        canvas.add(leftHole);
+        canvas.add(rightHole);
+      }
+    }
+
+    // Add captured/uploaded photos
+    layoutCfg.photoSlots.forEach((slot, index) => {
+      const photoSrc = photos[index];
+      if (photoSrc) {
+        addImageToSlot(photoSrc, slot.left, slot.top, slot.width, slot.height, () => {
+          if (!fabricCanvasRef.current) return;
+          // Add orange date stamp (Vintage filter effect, hidden by default)
+          createDateStamp(canvas, slot.left, slot.top, slot.width, slot.height, `dateStamp${index}`);
+
+          completedSlots += 1;
+          if (completedSlots === totalExpected) {
+            loadOverlay();
+          }
+        });
+      } else {
+        completedSlots += 1;
+        if (completedSlots === totalExpected) {
+          loadOverlay();
         }
       }
+    });
+  };
+
+  // Create retro orange date stamps
+  const createDateStamp = (canvas, left, top, width, height, tag) => {
+    const d = new Date();
+    const yy = String(d.getFullYear()).slice(-2);
+    const mm = String(d.getMonth() + 1).padStart(2, ' ');
+    const dd = String(d.getDate()).padStart(2, '0');
+    const stampString = `'${yy}  ${mm}  ${dd}`;
+
+    const textStamp = new fabric.Text(stampString, {
+      left: left + width - 110,
+      top: top + height - 25,
+      fontFamily: 'Courier Prime',
+      fontSize: 14,
+      fontWeight: 'bold',
+      fill: '#ff6600', // retro digital orange
+      opacity: 0, // hidden by default
+      selectable: false,
+      evented: false,
+      tag: tag
+    });
+    canvas.add(textStamp);
+  };
+
+  // Create caption at the bottom chin
+  const createCaptionText = (canvas) => {
+    const topPos = layoutCfg.captionTop || 365;
+
+    const capText = new fabric.Text(caption, {
+      left: layoutCfg.canvasWidth / 2,
+      top: topPos,
+      fontFamily: 'Courier Prime',
+      fontSize: 16,
+      fontWeight: 'bold',
+      fill: activeTheme.text,
+      originX: 'center',
+      selectable: false,
+      evented: false,
+      tag: 'brandingCaption'
+    });
+
+    canvas.add(capText);
+  };
+
+  // Theme selector
+  const selectTheme = (theme) => {
+    if (!fabricCanvasRef.current) return;
+    setActiveTheme(theme);
+    
+    const canvas = fabricCanvasRef.current;
+    canvas.backgroundColor = theme.bg;
+    
+    // Update caption text color
+    const objs = canvas.getObjects();
+    const captionObj = objs.find(obj => obj.tag === 'brandingCaption');
+    if (captionObj) {
+      captionObj.set({ fill: theme.text });
+    }
+
+    canvas.renderAll();
+  };
+
+  // Update caption text dynamically as user types
+  const handleCaptionChange = (e) => {
+    const val = e.target.value;
+    setCaption(val);
+    if (!fabricCanvasRef.current) return;
+    const canvas = fabricCanvasRef.current;
+    const captionObj = canvas.getObjects().find(obj => obj.tag === 'brandingCaption');
+    if (captionObj) {
+      captionObj.set({ text: val });
+      canvas.renderAll();
     }
   };
 
-  const drawPolaroidBorders = (canvas) => {
-    // Polaroid border is simply white border on top, but we can just draw lines to simulate the crop borders if needed,
-    // or since background is white, we draw a thin divider line between photos and chin
-    const line = new fabric.Line([20, 320, 320, 320], {
-      stroke: '#eaeaea',
-      strokeWidth: 1,
-      selectable: false,
-      evented: false
-    });
-    canvas.add(line);
-  };
-
-  // 3. Filter Applicator
+  // Simplified Filters: Normal (Color) vs Vintage
   const applyFilter = (filterName) => {
     if (!fabricCanvasRef.current) return;
     setActiveFilter(filterName);
@@ -170,24 +567,30 @@ const EditorStudio = ({ layout, photos, onBack, onGeneratePrint }) => {
     const canvas = fabricCanvasRef.current;
     const objects = canvas.getObjects();
     const photoLayers = objects.filter(obj => obj.isPhotoLayer);
+    
+    // Date stamp is only visible for vintage
+    const stamps = objects.filter(obj => obj.tag && obj.tag.startsWith('dateStamp'));
+    stamps.forEach(stamp => {
+      stamp.set({ opacity: filterName === 'vintage' ? 0.95 : 0 });
+    });
 
     photoLayers.forEach(photoObj => {
       photoObj.filters = []; // clear current filters
 
-      if (filterName === 'noir') {
-        photoObj.filters.push(new (fabric.filters.Grayscale || fabric.Image.filters.Grayscale)());
-      } else if (filterName === 'sepia') {
-        photoObj.filters.push(new (fabric.filters.Sepia || fabric.Image.filters.Sepia)());
-      } else if (filterName === 'cyberpunk') {
-        const ContrastClass = fabric.filters.Contrast || fabric.Image.filters.Contrast;
-        const BlendColorClass = fabric.filters.BlendColor || fabric.Image.filters.BlendColor;
-        photoObj.filters.push(new ContrastClass({ contrast: 0.25 }));
-        photoObj.filters.push(new BlendColorClass({ color: '#00ffff', mode: 'overlay', alpha: 0.25 }));
-      } else if (filterName === 'pastel') {
-        const BrightnessClass = fabric.filters.Brightness || fabric.Image.filters.Brightness;
-        const ContrastClass = fabric.filters.Contrast || fabric.Image.filters.Contrast;
-        photoObj.filters.push(new BrightnessClass({ brightness: 0.15 }));
-        photoObj.filters.push(new ContrastClass({ contrast: -0.1 }));
+      const SepiaClass = fabric.filters.Sepia || fabric.Image.filters.Sepia;
+      const ContrastClass = fabric.filters.Contrast || fabric.Image.filters.Contrast;
+      const BlendColorClass = fabric.filters.BlendColor || fabric.Image.filters.BlendColor;
+      const GrayscaleClass = fabric.filters.Grayscale || fabric.Image.filters.Grayscale;
+
+      if (filterName === 'vintage') {
+        photoObj.filters.push(new SepiaClass());
+        photoObj.filters.push(new ContrastClass({ contrast: -0.05 }));
+        // Warm retro filter overlay
+        photoObj.filters.push(new BlendColorClass({ color: '#ffcc00', mode: 'overlay', alpha: 0.12 }));
+      } else if (filterName === 'mono') {
+        if (GrayscaleClass) {
+          photoObj.filters.push(new GrayscaleClass());
+        }
       }
 
       photoObj.applyFilters();
@@ -196,77 +599,53 @@ const EditorStudio = ({ layout, photos, onBack, onGeneratePrint }) => {
     canvas.renderAll();
   };
 
-  // 4. Sticker Adder
-  const addVectorSticker = (pathString, fillColor) => {
+  // Sticker adder (loads asset-based PNG from Vite glob)
+  const addPremiumSticker = (url) => {
     if (!fabricCanvasRef.current) return;
     if (stickerCount >= MAX_STICKERS) {
-      alert(`Sticker limit reached (${MAX_STICKERS} max for mobile performance).`);
-      return;
-    }
-
-    const canvas = fabricCanvasRef.current;
-    const path = new fabric.Path(pathString, {
-      fill: fillColor,
-      stroke: '#ffffff',
-      strokeWidth: 1.5,
-      left: canvas.width / 2 - 25,
-      top: canvas.height / 2 - 25,
-      cornerColor: 'var(--color-gold)',
-      cornerSize: 8,
-      transparentCorners: false
-    });
-
-    // Make it touch friendly
-    path.scaleToWidth(50);
-    canvas.add(path);
-    canvas.setActiveObject(path);
-    canvas.renderAll();
-  };
-
-  const addEmojiSticker = (emoji) => {
-    if (!fabricCanvasRef.current) return;
-    if (stickerCount >= MAX_STICKERS) {
-      alert(`Sticker limit reached (${MAX_STICKERS} max for mobile performance).`);
-      return;
-    }
-
-    const canvas = fabricCanvasRef.current;
-    const text = new fabric.IText(emoji, {
-      left: canvas.width / 2 - 20,
-      top: canvas.height / 2 - 20,
-      fontSize: 40,
-      cornerColor: 'var(--color-gold)',
-      cornerSize: 8,
-      transparentCorners: false
-    });
-
-    canvas.add(text);
-    canvas.setActiveObject(text);
-    canvas.renderAll();
-  };
-
-  // 5. Text Layer Adder
-  const addTextLayer = (fontName) => {
-    if (!fabricCanvasRef.current) return;
-    if (textCount >= MAX_TEXTS) {
-      alert(`Text layer limit reached (${MAX_TEXTS} max for mobile performance).`);
+      alert(`Sticker limit reached (${MAX_STICKERS} max).`);
       return;
     }
 
     const canvas = fabricCanvasRef.current;
     
-    // Set text top/chin depending on layout
-    const textTop = layout === 'single' ? 340 : 468;
-    const textLeft = layout === 'single' ? 50 : 25;
-    const textColor = layout === 'single' ? '#000000' : '#ffffff';
+    const imgEl = new Image();
+    imgEl.src = url;
+    imgEl.onload = () => {
+      const ImageClass = fabric.FabricImage || fabric.Image;
+      const fabricImg = new ImageClass(imgEl, {
+        left: canvas.width / 2 - 40,
+        top: canvas.height / 2 - 40,
+        cornerColor: 'var(--color-gold)',
+        cornerSize: 8,
+        transparentCorners: false
+      });
+      fabricImg.scaleToWidth(80);
+      canvas.add(fabricImg);
+      canvas.setActiveObject(fabricImg);
+      canvas.renderAll();
+    };
+  };
+
+  // Text layer adder
+  const addTextLayer = (fontName) => {
+    if (!fabricCanvasRef.current) return;
+    if (textCount >= MAX_TEXTS) {
+      alert(`Text layer limit reached (${MAX_TEXTS} max).`);
+      return;
+    }
+
+    const canvas = fabricCanvasRef.current;
+    const textTop = layoutCfg.canvasHeight / 2 - 10;
+    const textColor = activeTheme.id === 'black' ? '#ffffff' : '#000000';
 
     const text = new fabric.IText('Tap to type', {
-      left: textLeft,
+      left: canvas.width / 2 - 50,
       top: textTop,
       fontFamily: fontName,
       fontSize: 20,
       fill: textColor,
-      isTextLayer: true, // Tag to count text layers
+      isTextLayer: true,
       cornerColor: 'var(--color-gold)',
       cornerSize: 8,
       transparentCorners: false
@@ -277,7 +656,7 @@ const EditorStudio = ({ layout, photos, onBack, onGeneratePrint }) => {
     canvas.renderAll();
   };
 
-  // 6. Delete Action
+  // Delete selection
   const deleteSelected = () => {
     if (!fabricCanvasRef.current) return;
     const canvas = fabricCanvasRef.current;
@@ -289,131 +668,272 @@ const EditorStudio = ({ layout, photos, onBack, onGeneratePrint }) => {
     }
   };
 
-  // Trigger download
+  // Export high-DPI data URL (WYSIWYG - matches editor exactly)
   const handleGenerate = () => {
     if (!fabricCanvasRef.current) return;
-    
-    // Deselect active object so bounding boxes don't render in print
-    fabricCanvasRef.current.discardActiveObject();
-    fabricCanvasRef.current.renderAll();
+    const canvas = fabricCanvasRef.current;
 
-    onGeneratePrint(fabricCanvasRef.current);
-  };
+    // Deselect active object to clear guides
+    canvas.discardActiveObject();
+    canvas.renderAll();
 
-  // Vector Path Constants
-  const PATHS = {
-    sparkle: 'M 0 -20 L 5 -5 L 20 0 L 5 5 L 0 20 L -5 5 L -20 0 L -5 -5 Z',
-    flare: 'M 0 -20 Q 0 0 -20 0 Q 0 0 0 20 Q 0 0 20 0 Q 0 0 0 -20 Z',
-    heart: 'M 0 -12 C -6 -18, -18 -12, -18 -4 C -18 6, 0 16, 0 20 C 0 16, 18 6, 18 -4 C 18 -12, 6 -18, 0 -12 Z',
-    star: 'M 0 -15 L 4 -4 L 15 -4 L 7 3 L 10 14 L 0 8 L -10 14 L -7 3 L -15 -4 L -4 -4 Z'
+    const multiplier = Math.min(window.devicePixelRatio || 2, 3);
+    const highResDataUrl = canvas.toDataURL({
+      format: 'png',
+      quality: 1.0,
+      multiplier: multiplier
+    });
+
+    onGeneratePrint(highResDataUrl);
   };
 
   return (
     <div className="studio-container">
-      {/* Object count alerts */}
+      {/* Object limit tracker */}
       <div className={`object-count-pill ${(stickerCount >= MAX_STICKERS || textCount >= MAX_TEXTS) ? 'warning' : ''}`}>
         Stickers: {stickerCount}/{MAX_STICKERS} | Texts: {textCount}/{MAX_TEXTS}
       </div>
 
       {/* Editor Stage */}
-      <div className="studio-stage">
-        <div className="canvas-box-shadow-wrapper">
+      <div className="studio-stage" style={{ position: 'relative' }}>
+        <div 
+          className="canvas-box-shadow-wrapper" 
+          style={{ 
+            maxHeight: '72vh',
+            backgroundColor: layout === 'digicam' ? 'transparent' : '#ffffff',
+            boxShadow: layout === 'digicam' ? 'none' : '0 12px 36px rgba(0, 0, 0, 0.6)'
+          }}
+        >
           <canvas ref={canvasRef} />
         </div>
+
+        {/* Floating Reset Zoom Button overlay */}
+        {zoomLevel > 1.02 && (
+          <button 
+            className="btn-outline"
+            onClick={handleResetZoom}
+            style={{
+              position: 'absolute',
+              bottom: '15px',
+              right: '15px',
+              padding: '6px 12px',
+              fontSize: '0.75rem',
+              borderRadius: '20px',
+              backgroundColor: 'rgba(0,0,0,0.8)',
+              color: 'var(--color-gold)',
+              border: '1px solid var(--color-gold)',
+              boxShadow: '0 4px 10px rgba(0,0,0,0.5)',
+              cursor: 'pointer',
+              zIndex: 100,
+              fontFamily: 'Outfit',
+              fontWeight: '700',
+              textTransform: 'uppercase',
+              letterSpacing: '0.5px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px'
+            }}
+          >
+            <span>🔍 Reset Zoom</span>
+          </button>
+        )}
       </div>
 
-      {/* Bottom Tool Panels */}
+      {/* Premium Bottom Sheet */}
       <div className="studio-bottom-bar">
-        {/* Tabs switcher */}
-        <div className="studio-tabs">
-          <button 
-            className={`studio-tab-btn ${activeTab === 'filters' ? 'active' : ''}`}
-            onClick={() => setActiveTab('filters')}
-          >
-            <Sparkles size={18} />
-            <span>Filters</span>
-          </button>
-          
-          <button 
-            className={`studio-tab-btn ${activeTab === 'stickers' ? 'active' : ''}`}
-            onClick={() => setActiveTab('stickers')}
-          >
-            <Smile size={18} />
-            <span>Stickers</span>
-          </button>
+        <div className="bottom-sheet-handle"></div>
 
-          <button 
-            className={`studio-tab-btn ${activeTab === 'text' ? 'active' : ''}`}
-            onClick={() => setActiveTab('text')}
-          >
-            <Type size={18} />
-            <span>Text</span>
-          </button>
-        </div>
+        {/* Tab contents tray */}
+        <div className="studio-tray custom-scrollbar" style={{ height: '85px' }}>
+          {activeTab === 'themes' && (
+            <>
+              {FRAME_THEMES.map(theme => (
+                <div 
+                  key={theme.id}
+                  className={`text-font-card ${activeTheme.id === theme.id ? 'active' : ''}`}
+                  onClick={() => selectTheme(theme)}
+                >
+                  <div style={{ width: '20px', height: '20px', borderRadius: '50%', backgroundColor: theme.bg, border: '1px solid #ddd', marginBottom: '4px' }}></div>
+                  <div className="text-font-name">{theme.name}</div>
+                </div>
+              ))}
+            </>
+          )}
 
-        {/* Tab Traies */}
-        <div className="studio-tray custom-scrollbar">
           {activeTab === 'filters' && (
             <>
               <div className={`filter-card ${activeFilter === 'none' ? 'active' : ''}`} onClick={() => applyFilter('none')}>
                 <div className="filter-preview-circle" style={{ background: '#555' }}></div>
-                <div className="filter-name">Normal</div>
+                <div className="filter-name">Color (Normal)</div>
               </div>
-              <div className={`filter-card ${activeFilter === 'sepia' ? 'active' : ''}`} onClick={() => applyFilter('sepia')}>
-                <div className="filter-preview-circle" style={{ background: '#704214' }}></div>
-                <div className="filter-name">Vintage</div>
+              <div className={`filter-card ${activeFilter === 'vintage' ? 'active' : ''}`} onClick={() => applyFilter('vintage')}>
+                <div className="filter-preview-circle" style={{ background: 'linear-gradient(45deg, #ff8800, #704214)' }}></div>
+                <div className="filter-name">Vintage (Retro)</div>
               </div>
-              <div className={`filter-card ${activeFilter === 'noir' ? 'active' : ''}`} onClick={() => applyFilter('noir')}>
-                <div className="filter-preview-circle" style={{ background: '#222' }}></div>
-                <div className="filter-name">Noir</div>
-              </div>
-              <div className={`filter-card ${activeFilter === 'cyberpunk' ? 'active' : ''}`} onClick={() => applyFilter('cyberpunk')}>
-                <div className="filter-preview-circle" style={{ background: 'linear-gradient(45deg, #00ffff, #ff00ff)' }}></div>
-                <div className="filter-name">Cyber</div>
-              </div>
-              <div className={`filter-card ${activeFilter === 'pastel' ? 'active' : ''}`} onClick={() => applyFilter('pastel')}>
-                <div className="filter-preview-circle" style={{ background: '#ffe4e1' }}></div>
-                <div className="filter-name">Pastel</div>
+              <div className={`filter-card ${activeFilter === 'mono' ? 'active' : ''}`} onClick={() => applyFilter('mono')}>
+                <div className="filter-preview-circle" style={{ background: 'linear-gradient(135deg, #000 0%, #888 50%, #fff 100%)' }}></div>
+                <div className="filter-name">B&W (Noir)</div>
               </div>
             </>
           )}
 
           {activeTab === 'stickers' && (
             <>
-              {/* Vector path shapes */}
-              <div className="sticker-card" onClick={() => addVectorSticker(PATHS.sparkle, '#ffcc00')} style={{ color: '#ffcc00' }}>✨</div>
-              <div className="sticker-card" onClick={() => addVectorSticker(PATHS.flare, '#ff4757')} style={{ color: '#ff4757' }}>💖</div>
-              <div className="sticker-card" onClick={() => addVectorSticker(PATHS.star, '#00ffff')} style={{ color: '#00ffff' }}>⭐</div>
-              <div className="sticker-card" onClick={() => addVectorSticker(PATHS.heart, '#ff7675')} style={{ color: '#ff7675' }}>❤️</div>
-              
-              {/* Emojis */}
-              <div className="sticker-card" onClick={() => addEmojiSticker('🕶️')}>🕶️</div>
-              <div className="sticker-card" onClick={() => addEmojiSticker('👑')}>👑</div>
-              <div className="sticker-card" onClick={() => addEmojiSticker('🎀')}>🎀</div>
-              <div className="sticker-card" onClick={() => addEmojiSticker('🌸')}>🌸</div>
-              <div className="sticker-card" onClick={() => addEmojiSticker('🍒')}>🍒</div>
-              <div className="sticker-card" onClick={() => addEmojiSticker('🦄')}>🦄</div>
-              <div className="sticker-card" onClick={() => addEmojiSticker('🎉')}>🎉</div>
-              <div className="sticker-card" onClick={() => addEmojiSticker('🍀')}>🍀</div>
+              {/* Hidden file input for uploading custom PNG stickers */}
+              <input
+                type="file"
+                ref={customStickerInputRef}
+                onChange={handleCustomStickerUpload}
+                accept="image/png, image/*.png"
+                style={{ display: 'none' }}
+              />
+
+              {/* Add custom sticker picker button */}
+              <div 
+                className="sticker-card add-sticker-btn"
+                onClick={() => customStickerInputRef.current?.click()}
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  border: '2px dashed var(--color-gold)',
+                  borderRadius: '10px',
+                  cursor: 'pointer',
+                  minWidth: '55px',
+                  height: '55px',
+                  backgroundColor: 'rgba(255, 204, 0, 0.05)',
+                  color: 'var(--color-gold)',
+                  gap: '2px',
+                  padding: '4px'
+                }}
+                title="Upload custom PNG sticker"
+              >
+                <Plus size={18} />
+                <span style={{ fontSize: '9px', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.5px' }}>Add</span>
+              </div>
+
+              {/* Render custom stickers loaded from IndexedDB */}
+              {customStickers.map((sticker) => (
+                <div 
+                  key={sticker.id} 
+                  className="sticker-card" 
+                  onClick={() => addPremiumSticker(sticker.dataUrl)}
+                  style={{ overflow: 'hidden', padding: '2px', position: 'relative' }}
+                  title={sticker.name}
+                >
+                  <img 
+                    src={sticker.dataUrl} 
+                    alt={sticker.name} 
+                    style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+                  />
+                  <button
+                    onClick={(e) => handleDeleteCustomSticker(e, sticker.id)}
+                    style={{
+                      position: 'absolute',
+                      top: '1px',
+                      right: '1px',
+                      background: '#ff4757',
+                      color: '#ffffff',
+                      border: 'none',
+                      borderRadius: '50%',
+                      width: '14px',
+                      height: '14px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      cursor: 'pointer',
+                      boxShadow: '0 1px 3px rgba(0,0,0,0.4)',
+                      padding: 0,
+                      zIndex: 10
+                    }}
+                    title="Delete sticker"
+                  >
+                    <X size={9} />
+                  </button>
+                </div>
+              ))}
+
+              {/* Render default premium stickers */}
+              {ASSET_STICKERS.map((url, index) => {
+                const filename = url.split('/').pop().split('.')[0] || `sticker-${index}`;
+                return (
+                  <div 
+                    key={url} 
+                    className="sticker-card" 
+                    onClick={() => addPremiumSticker(url)}
+                    style={{ overflow: 'hidden', padding: '2px' }}
+                    title={filename}
+                  >
+                    <img 
+                      src={url} 
+                      alt={filename} 
+                      style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+                    />
+                  </div>
+                );
+              })}
             </>
           )}
 
           {activeTab === 'text' && (
             <>
-              <div className="text-font-card" onClick={() => addTextLayer('Caveat')}>
-                <div className="text-font-name" style={{ fontFamily: 'Caveat', fontSize: '1.1rem' }}>Handwriting</div>
-              </div>
-              <div className="text-font-card" onClick={() => addTextLayer('Courier Prime')}>
-                <div className="text-font-name" style={{ fontFamily: 'Courier Prime' }}>Typewriter</div>
-              </div>
-              <div className="text-font-card" onClick={() => addTextLayer('Outfit')}>
-                <div className="text-font-name" style={{ fontFamily: 'Outfit' }}>Modern Bold</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', width: '100%', padding: '0 8px' }}>
+                <input
+                  type="text"
+                  value={caption}
+                  onChange={handleCaptionChange}
+                  placeholder="Caption..."
+                  style={{
+                    backgroundColor: 'rgba(255,255,255,0.08)',
+                    border: '1px solid rgba(255,204,0,0.3)',
+                    borderRadius: '20px',
+                    padding: '8px 16px',
+                    color: '#fff',
+                    fontFamily: 'Courier Prime',
+                    fontSize: '0.85rem',
+                    flex: 1,
+                    outline: 'none'
+                  }}
+                />
+                
+                <div className="text-font-card" onClick={() => addTextLayer('Caveat')} style={{ padding: '8px 12px' }}>
+                  <span style={{ fontFamily: 'Caveat', fontSize: '1rem' }}>✏️ Draw</span>
+                </div>
+                <div className="text-font-card" onClick={() => addTextLayer('Courier Prime')} style={{ padding: '8px 12px' }}>
+                  <span style={{ fontFamily: 'Courier Prime' }}>⌨️ Type</span>
+                </div>
               </div>
             </>
           )}
         </div>
 
-        {/* Action bar */}
+        {/* Tab menu switcher */}
+        <div className="studio-tabs">
+          {layout !== 'digicam' && (
+            <button className={`studio-tab-btn ${activeTab === 'themes' ? 'active' : ''}`} onClick={() => setActiveTab('themes')}>
+              <Palette size={18} />
+              <span>Themes</span>
+            </button>
+          )}
+
+          <button className={`studio-tab-btn ${activeTab === 'filters' ? 'active' : ''}`} onClick={() => setActiveTab('filters')}>
+            <Sparkles size={18} />
+            <span>Filters</span>
+          </button>
+          
+          <button className={`studio-tab-btn ${activeTab === 'stickers' ? 'active' : ''}`} onClick={() => setActiveTab('stickers')}>
+            <Smile size={18} />
+            <span>Stickers</span>
+          </button>
+
+          <button className={`studio-tab-btn ${activeTab === 'text' ? 'active' : ''}`} onClick={() => setActiveTab('text')}>
+            <Type size={18} />
+            <span>Text</span>
+          </button>
+        </div>
+
+        {/* Studio bottom actions */}
         <div className="studio-actions-bar">
           <button className="btn-outline" onClick={onBack} style={{ display: 'flex', gap: '8px', justifyContent: 'center', alignItems: 'center' }}>
             <ArrowLeft size={18} />
