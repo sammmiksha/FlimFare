@@ -30,8 +30,8 @@ No installs. No accounts. Just vibes.
 
 <div align="center">
 
-![FilmFare Example](<img width="425" height="550" alt="aurabooth-1781708799960" src="https://github.com/user-attachments/assets/d89073b3-ab01-42a2-b843-ee77bb7256c6" />
-)
+![FilmFare Example]<img width="425" height="550" alt="aurabooth-1781708799960" src="https://github.com/user-attachments/assets/d89073b3-ab01-42a2-b843-ee77bb7256c6" />
+
 
 *Generated with FilmFare — Retro Digicam layout*
 
