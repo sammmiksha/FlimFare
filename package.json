@@ -1,5 +1,5 @@
 {
-  "name": "photobooth",
+  "name": "FlimeFlare",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -26,13 +26,12 @@
     "globals": "^17.6.0",
     "vite": "^8.0.12"
   },
-  "scripts":
-  {
-  "dev": "vite",
-  "build": "vite build",
-  "lint": "eslint .",
-  "preview": "vite preview",
-  "predeploy": "npm run build",
-  "deploy": "gh-pages -d dist"
-}
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "lint": "eslint .",
+    "preview": "vite preview",
+    "predeploy": "npm run build",
+    "deploy": "gh-pages -d dist"
+  }
 }
