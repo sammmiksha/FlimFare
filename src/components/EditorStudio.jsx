@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as fabric from 'fabric';
-import { Type, Sparkles, Smile, Palette, Trash2, ArrowLeft, ArrowRight, Plus, X } from 'lucide-react';
+import { Type, Sparkles, Smile, Palette, Trash2, ArrowLeft, ArrowRight, Plus, X, RotateCw } from 'lucide-react';
 import { getCustomStickers, addCustomSticker, deleteCustomSticker } from '../utils/stickerStore';
 import { LAYOUTS } from '../utils/layoutConfig';
 
@@ -119,8 +119,115 @@ const EditorStudio = ({ layout, photos, onBack, onGeneratePrint }) => {
   const [textCount, setTextCount] = useState(0);
   const [hasSelection, setHasSelection] = useState(false);
 
+  // Active object adjustments states
+  const [activeTextObj, setActiveTextObj] = useState(null);
+  const [textEditorVal, setTextEditorVal] = useState('');
+
   const MAX_STICKERS = layoutCfg.maxStickers;
   const MAX_TEXTS = layoutCfg.maxTexts;
+
+  const touchDragStickerRef = useRef(null);
+
+  const handleDragStart = (e, url) => {
+    e.dataTransfer.setData('text/plain', url);
+    e.dataTransfer.effectAllowed = 'copy';
+  };
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    if (e.dataTransfer) {
+      e.dataTransfer.dropEffect = 'copy';
+    }
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    const url = e.dataTransfer.getData('text/plain');
+    if (!url) return;
+    
+    if (!fabricCanvasRef.current) return;
+    const canvas = fabricCanvasRef.current;
+    
+    const clientX = e.clientX;
+    const clientY = e.clientY;
+    
+    const pointer = canvas.getPointer({ clientX, clientY });
+    addPremiumStickerAtPosition(url, pointer.x, pointer.y);
+  };
+
+  // Touch drag and drop helpers for mobile viewports
+  const handleStickerTouchStart = (e, url) => {
+    touchDragStickerRef.current = url;
+    const touch = e.touches[0];
+    
+    // Create floating thumbnail preview
+    const preview = document.createElement('img');
+    preview.src = url;
+    preview.id = 'mobile-drag-sticker-preview';
+    preview.style.position = 'fixed';
+    preview.style.width = '60px';
+    preview.style.height = '60px';
+    preview.style.objectFit = 'contain';
+    preview.style.pointerEvents = 'none';
+    preview.style.zIndex = '9999';
+    preview.style.opacity = '0.75';
+    preview.style.left = `${touch.clientX - 30}px`;
+    preview.style.top = `${touch.clientY - 30}px`;
+    document.body.appendChild(preview);
+  };
+
+  const handleStickerTouchMove = (e) => {
+    if (!touchDragStickerRef.current) return;
+    const touch = e.touches[0];
+    const preview = document.getElementById('mobile-drag-sticker-preview');
+    if (preview) {
+      preview.style.left = `${touch.clientX - 30}px`;
+      preview.style.top = `${touch.clientY - 30}px`;
+    }
+  };
+
+  const handleStickerTouchEnd = (e) => {
+    const url = touchDragStickerRef.current;
+    touchDragStickerRef.current = null;
+    
+    const preview = document.getElementById('mobile-drag-sticker-preview');
+    if (preview) {
+      preview.remove();
+    }
+    
+    if (!url) return;
+    
+    const touch = e.changedTouches[0];
+    const clientX = touch.clientX;
+    const clientY = touch.clientY;
+    
+    if (!fabricCanvasRef.current || !canvasRef.current) return;
+    const canvas = fabricCanvasRef.current;
+    const canvasEl = canvasRef.current;
+    const rect = canvasEl.getBoundingClientRect();
+    
+    if (
+      clientX >= rect.left &&
+      clientX <= rect.right &&
+      clientY >= rect.top &&
+      clientY <= rect.bottom
+    ) {
+      const pointer = canvas.getPointer({ clientX, clientY });
+      addPremiumStickerAtPosition(url, pointer.x, pointer.y);
+    }
+  };
+
+
+
+  const handleTextEditorChange = (e) => {
+    const val = e.target.value;
+    setTextEditorVal(val);
+    if (!fabricCanvasRef.current || !activeTextObj) return;
+    const canvas = fabricCanvasRef.current;
+    
+    activeTextObj.set({ text: val });
+    canvas.renderAll();
+  };
 
   useEffect(() => {
     // 1. Initialize Fabric Canvas dynamically based on layout config
@@ -128,18 +235,53 @@ const EditorStudio = ({ layout, photos, onBack, onGeneratePrint }) => {
       width: layoutCfg.canvasWidth,
       height: layoutCfg.canvasHeight,
       backgroundColor: layout === 'digicam' ? null : activeTheme.bg,
-      allowTouchScrolling: false,
+      allowTouchScrolling: true,
+      preserveObjectStacking: true, // Keep object layering order during selection
       enableRetinaScaling: false // Prevent device pixel ratio/Retina clipping and offset issues
     });
 
     fabricCanvasRef.current = canvas;
 
     // Selection handlers
-    canvas.on('selection:created', () => setHasSelection(true));
-    canvas.on('selection:updated', () => setHasSelection(true));
-    canvas.on('selection:cleared', () => setHasSelection(false));
+    const handleSelection = () => {
+      const activeObj = canvas.getActiveObject();
+      setHasSelection(!!activeObj);
+      
+      if (activeObj && activeObj.isTextLayer) {
+        setActiveTextObj(activeObj);
+        setTextEditorVal(activeObj.text);
+      } else {
+        setActiveTextObj(null);
+        setTextEditorVal('');
+      }
+    };
+
+    canvas.on('selection:created', handleSelection);
+    canvas.on('selection:updated', handleSelection);
+    canvas.on('selection:cleared', handleSelection);
     canvas.on('object:added', updateObjectCounts);
     canvas.on('object:removed', updateObjectCounts);
+
+    // Canvas native drag and drop listeners
+    canvas.on('dragover', (opt) => {
+      opt.e.preventDefault();
+    });
+
+    canvas.on('drop', (opt) => {
+      opt.e.preventDefault();
+      const url = opt.e.dataTransfer.getData('text/plain');
+      if (url) {
+        const pointer = canvas.getPointer(opt.e);
+        addPremiumStickerAtPosition(url, pointer.x, pointer.y);
+      }
+    });
+
+    canvas.on('text:changed', (opt) => {
+      const target = opt.target;
+      if (target && target.isTextLayer) {
+        setTextEditorVal(target.text);
+      }
+    });
 
     // 2. Render layout frames, photos, date stamps, and captions
     setupWorkspace(canvas);
@@ -356,8 +498,8 @@ const EditorStudio = ({ layout, photos, onBack, onGeneratePrint }) => {
           height: imgH,
           scaleX: slotWidth / imgW,
           scaleY: slotHeight / imgH,
-          selectable: false,
-          evented: false,
+          selectable: false, // Static layout photo
+          evented: false,    // No selection/pan/zoom
           hoverCursor: 'default',
           isPhotoLayer: true
         });
@@ -608,20 +750,53 @@ const EditorStudio = ({ layout, photos, onBack, onGeneratePrint }) => {
     }
 
     const canvas = fabricCanvasRef.current;
+    const center = canvas.getVpCenter();
     
     const imgEl = new Image();
     imgEl.src = url;
     imgEl.onload = () => {
       const ImageClass = fabric.FabricImage || fabric.Image;
       const fabricImg = new ImageClass(imgEl, {
-        left: canvas.width / 2 - 40,
-        top: canvas.height / 2 - 40,
+        left: center.x - 40,
+        top: center.y - 40,
         cornerColor: 'var(--color-gold)',
-        cornerSize: 8,
-        transparentCorners: false
+        cornerSize: 14,
+        transparentCorners: false,
+        rotatingPointOffset: 25
       });
       fabricImg.scaleToWidth(80);
       canvas.add(fabricImg);
+      canvas.bringToFront(fabricImg);
+      canvas.setActiveObject(fabricImg);
+      canvas.renderAll();
+    };
+  };
+
+  // Drag and Drop sticker helper to place at a specific coordinate
+  const addPremiumStickerAtPosition = (url, x, y) => {
+    if (!fabricCanvasRef.current) return;
+    if (stickerCount >= MAX_STICKERS) {
+      alert(`Sticker limit reached (${MAX_STICKERS} max).`);
+      return;
+    }
+
+    const canvas = fabricCanvasRef.current;
+    
+    const imgEl = new Image();
+    imgEl.src = url;
+    imgEl.onload = () => {
+      const ImageClass = fabric.FabricImage || fabric.Image;
+      const fabricImg = new ImageClass(imgEl, {
+        left: x - 40,
+        top: y - 40,
+        cornerColor: 'var(--color-gold)',
+        cornerSize: 14,
+        transparentCorners: false,
+        rotatingPointOffset: 25
+      });
+      fabricImg.scaleToWidth(80);
+      canvas.add(fabricImg);
+      canvas.bringToFront(fabricImg);
       canvas.setActiveObject(fabricImg);
       canvas.renderAll();
     };
@@ -636,22 +811,25 @@ const EditorStudio = ({ layout, photos, onBack, onGeneratePrint }) => {
     }
 
     const canvas = fabricCanvasRef.current;
-    const textTop = layoutCfg.canvasHeight / 2 - 10;
+    const center = canvas.getVpCenter();
     const textColor = activeTheme.id === 'black' ? '#ffffff' : '#000000';
 
     const text = new fabric.IText('Tap to type', {
-      left: canvas.width / 2 - 50,
-      top: textTop,
+      left: center.x - 50,
+      top: center.y - 15,
       fontFamily: fontName,
-      fontSize: 20,
+      fontSize: 24,
       fill: textColor,
       isTextLayer: true,
+      padding: 12, // Larger touch target
       cornerColor: 'var(--color-gold)',
-      cornerSize: 8,
-      transparentCorners: false
+      cornerSize: 14,
+      transparentCorners: false,
+      rotatingPointOffset: 25
     });
 
     canvas.add(text);
+    canvas.bringToFront(text);
     canvas.setActiveObject(text);
     canvas.renderAll();
   };
@@ -664,6 +842,18 @@ const EditorStudio = ({ layout, photos, onBack, onGeneratePrint }) => {
     if (activeObj) {
       canvas.remove(activeObj);
       canvas.discardActiveObject();
+      canvas.renderAll();
+    }
+  };
+
+  // Rotate selection by 15 degrees clockwise
+  const rotateSelected = () => {
+    if (!fabricCanvasRef.current) return;
+    const canvas = fabricCanvasRef.current;
+    const activeObj = canvas.getActiveObject();
+    if (activeObj) {
+      const currentAngle = activeObj.angle || 0;
+      activeObj.set({ angle: (currentAngle + 15) % 360 });
       canvas.renderAll();
     }
   };
@@ -695,11 +885,21 @@ const EditorStudio = ({ layout, photos, onBack, onGeneratePrint }) => {
       </div>
 
       {/* Editor Stage */}
-      <div className="studio-stage" style={{ position: 'relative' }}>
+      <div 
+        className="studio-stage" 
+        style={{ 
+          position: 'relative',
+          overflowY: (layout === 'strip' || layout === 'strip5') ? 'auto' : 'hidden',
+          alignItems: (layout === 'strip' || layout === 'strip5') ? 'flex-start' : 'center',
+          padding: (layout === 'strip' || layout === 'strip5') ? '24px 12px 60px 12px' : '12px'
+        }}
+      >
         <div 
           className="canvas-box-shadow-wrapper" 
+          onDragOver={handleDragOver}
+          onDrop={handleDrop}
           style={{ 
-            maxHeight: '72vh',
+            maxHeight: (layout === 'strip' || layout === 'strip5') ? 'none' : '72vh',
             backgroundColor: layout === 'digicam' ? 'transparent' : '#ffffff',
             boxShadow: layout === 'digicam' ? 'none' : '0 12px 36px rgba(0, 0, 0, 0.6)'
           }}
@@ -742,6 +942,43 @@ const EditorStudio = ({ layout, photos, onBack, onGeneratePrint }) => {
       {/* Premium Bottom Sheet */}
       <div className="studio-bottom-bar">
         <div className="bottom-sheet-handle"></div>
+
+        {/* Floating Active Selection Controls (Text Input) */}
+        {activeTextObj && (
+          <div className="selection-adjust-panel" style={{
+            padding: '10px 16px',
+            backgroundColor: 'rgba(28, 14, 5, 0.95)',
+            borderBottom: '1px solid rgba(255, 204, 0, 0.25)',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '12px',
+            width: '100%',
+            boxSizing: 'border-box',
+            justifyContent: 'space-between',
+            backdropFilter: 'blur(10px)'
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', width: '100%' }}>
+              <span style={{ color: 'var(--color-gold)', fontWeight: 'bold', fontSize: '0.8rem', whiteSpace: 'nowrap', textTransform: 'uppercase', letterSpacing: '0.5px' }}>✏️ Edit Text:</span>
+              <input
+                type="text"
+                value={textEditorVal}
+                onChange={handleTextEditorChange}
+                placeholder="Type text..."
+                style={{
+                  flex: 1,
+                  backgroundColor: 'rgba(255,255,255,0.08)',
+                  border: '1px solid rgba(255,204,0,0.3)',
+                  borderRadius: '16px',
+                  padding: '6px 12px',
+                  color: '#fff',
+                  fontFamily: activeTextObj.fontFamily || 'Courier Prime',
+                  fontSize: '0.85rem',
+                  outline: 'none'
+                }}
+              />
+            </div>
+          </div>
+        )}
 
         {/* Tab contents tray */}
         <div className="studio-tray custom-scrollbar" style={{ height: '85px' }}>
@@ -819,6 +1056,11 @@ const EditorStudio = ({ layout, photos, onBack, onGeneratePrint }) => {
                   key={sticker.id} 
                   className="sticker-card" 
                   onClick={() => addPremiumSticker(sticker.dataUrl)}
+                  draggable={true}
+                  onDragStart={(e) => handleDragStart(e, sticker.dataUrl)}
+                  onTouchStart={(e) => handleStickerTouchStart(e, sticker.dataUrl)}
+                  onTouchMove={handleStickerTouchMove}
+                  onTouchEnd={handleStickerTouchEnd}
                   style={{ overflow: 'hidden', padding: '2px', position: 'relative' }}
                   title={sticker.name}
                 >
@@ -862,6 +1104,11 @@ const EditorStudio = ({ layout, photos, onBack, onGeneratePrint }) => {
                     key={url} 
                     className="sticker-card" 
                     onClick={() => addPremiumSticker(url)}
+                    draggable={true}
+                    onDragStart={(e) => handleDragStart(e, url)}
+                    onTouchStart={(e) => handleStickerTouchStart(e, url)}
+                    onTouchMove={handleStickerTouchMove}
+                    onTouchEnd={handleStickerTouchEnd}
                     style={{ overflow: 'hidden', padding: '2px' }}
                     title={filename}
                   >
@@ -897,11 +1144,11 @@ const EditorStudio = ({ layout, photos, onBack, onGeneratePrint }) => {
                   }}
                 />
                 
-                <div className="text-font-card" onClick={() => addTextLayer('Caveat')} style={{ padding: '8px 12px' }}>
-                  <span style={{ fontFamily: 'Caveat', fontSize: '1rem' }}>✏️ Draw</span>
+                <div className="text-font-card" onClick={() => addTextLayer('Pacifico')} style={{ padding: '8px 16px' }}>
+                  <span style={{ fontFamily: 'Pacifico', fontSize: '0.9rem' }}>✍️ Handwriting</span>
                 </div>
-                <div className="text-font-card" onClick={() => addTextLayer('Courier Prime')} style={{ padding: '8px 12px' }}>
-                  <span style={{ fontFamily: 'Courier Prime' }}>⌨️ Type</span>
+                <div className="text-font-card" onClick={() => addTextLayer('Courier Prime')} style={{ padding: '8px 16px' }}>
+                  <span style={{ fontFamily: 'Courier Prime', fontSize: '0.9rem' }}>⌨️ Typewriter</span>
                 </div>
               </div>
             </>
@@ -941,10 +1188,16 @@ const EditorStudio = ({ layout, photos, onBack, onGeneratePrint }) => {
           </button>
           
           {hasSelection && (
-            <button className="btn-outline" onClick={deleteSelected} style={{ borderColor: '#ff4757', color: '#ff4757', display: 'flex', gap: '8px', justifyContent: 'center', alignItems: 'center' }}>
-              <Trash2 size={18} />
-              <span>Delete</span>
-            </button>
+            <>
+              <button className="btn-outline" onClick={rotateSelected} style={{ borderColor: 'var(--color-gold)', color: 'var(--color-gold)', display: 'flex', gap: '8px', justifyContent: 'center', alignItems: 'center' }}>
+                <RotateCw size={18} />
+                <span>Rotate</span>
+              </button>
+              <button className="btn-outline" onClick={deleteSelected} style={{ borderColor: '#ff4757', color: '#ff4757', display: 'flex', gap: '8px', justifyContent: 'center', alignItems: 'center' }}>
+                <Trash2 size={18} />
+                <span>Delete</span>
+              </button>
+            </>
           )}
 
           <button className="btn-gold" onClick={handleGenerate} style={{ display: 'flex', gap: '8px', justifyContent: 'center', alignItems: 'center' }}>
