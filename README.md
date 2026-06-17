@@ -12,6 +12,8 @@
 
 *Snap. Style. Export. Repeat.*
 
+🔗 **[Live Demo](https://sammmiksha.github.io/FlimFare/)**
+
 </div>
 
 ---
@@ -21,6 +23,18 @@
 FilmFare is a browser-based digital photobooth built for the nostalgic at heart. Powered by React, Vite, and Fabric.js, it lets users capture photos directly from their webcam, layer them with stickers and text, apply retro-themed layouts, and export finished creations in multiple formats — all without leaving the browser.
 
 No installs. No accounts. Just vibes.
+
+---
+
+## 🖼️ Example Output
+
+<div align="center">
+
+![FilmFare Example](./aurabooth-1781708799960.png)
+
+*Generated with FilmFare — Retro Digicam layout*
+
+</div>
 
 ---
 
