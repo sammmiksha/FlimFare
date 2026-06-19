@@ -854,9 +854,35 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: center;
-  max-height: 60vh;
+  max-height: 70vh;
   margin-bottom: 30px;
   width: 100%;
+}
+
+.review-strip-container {
+  max-height: 68vh;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  padding: 10px;
+  box-sizing: border-box;
+}
+
+.review-strip-container::-webkit-scrollbar {
+  width: 8px;
+}
+.review-strip-container::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: 4px;
+}
+.review-strip-container::-webkit-scrollbar-thumb {
+  background: rgba(255, 204, 0, 0.25);
+  border-radius: 4px;
+  border: 1px solid rgba(255, 204, 0, 0.1);
+}
+.review-strip-container::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 204, 0, 0.55);
+  border-color: var(--color-gold);
 }
 
 .review-preview-frame {
@@ -1293,6 +1319,235 @@ html, body {
   transform: translateX(-50%) scale(1);
   box-shadow: none;
 }
+
+/* Placement Mode Banner Styling */
+.placement-banner {
+  position: absolute;
+  top: 15px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  background: rgba(28, 14, 5, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--color-gold);
+  border-radius: 30px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), 0 0 15px var(--color-gold-glow);
+  animation: bannerSlideDown 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  pointer-events: auto;
+}
+
+@keyframes bannerSlideDown {
+  from {
+    transform: translate(-50%, -20px);
+    opacity: 0;
+  }
+  to {
+    transform: translate(-50%, 0);
+    opacity: 1;
+  }
+}
+
+.placement-banner-text {
+  font-family: var(--font-main);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #ffffff;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+}
+
+.placement-banner-close {
+  background: transparent;
+  border: none;
+  color: rgba(255, 255, 255, 0.6);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border-radius: 50%;
+  transition: background-color 0.2s, color 0.2s;
+}
+
+.placement-banner-close:hover {
+  background-color: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+}
+
+/* Canvas Wrapper Highlight in Placement Mode */
+.canvas-box-shadow-wrapper.canvas-highlight-placement {
+  border: 2px solid var(--color-gold);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.6), 0 0 25px var(--color-gold-glow) !important;
+  transition: box-shadow 0.3s ease, border-color 0.3s ease;
+}
+
+/* Tray selection indicator highlight */
+.sticker-card.active-placement, .text-font-card.active-placement {
+  border-color: var(--color-gold) !important;
+  box-shadow: 0 0 10px var(--color-gold-glow) !important;
+  transform: scale(1.05);
+}
+
+/* Adjust Modal Overlay & Positioning */
+.adjust-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  animation: fadeIn 0.25s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.adjust-modal-container {
+  background-color: rgba(28, 14, 5, 0.98);
+  border: 3px solid var(--color-gold);
+  border-radius: 16px;
+  width: 90%;
+  max-width: 400px;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.8), 0 0 20px rgba(255, 204, 0, 0.2);
+  animation: scaleUp 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes scaleUp {
+  from { transform: scale(0.9); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
+
+.adjust-modal-header {
+  margin-bottom: 15px;
+  width: 100%;
+  text-align: center;
+}
+
+.adjust-modal-header h3 {
+  margin: 0;
+  font-family: var(--font-main);
+  color: var(--color-gold);
+  font-size: 1.25rem;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+
+.adjust-modal-body {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-bottom: 20px;
+  gap: 12px;
+}
+
+.adjust-modal-instructions {
+  font-family: var(--font-main);
+  font-size: 0.75rem;
+  color: #a29995;
+  text-align: center;
+  margin: 0;
+  line-height: 1.4;
+}
+
+.adjust-modal-footer {
+  display: flex;
+  width: 100%;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.adjust-modal-footer button {
+  flex: 1;
+  padding: 10px 14px;
+  font-size: 0.9rem;
+  font-weight: 700;
+  border-radius: 20px;
+  cursor: pointer;
+  transition: transform 0.1s, background-color 0.2s;
+  text-transform: uppercase;
+  font-family: var(--font-main);
+}
+
+.adjust-modal-footer button:active {
+  transform: scale(0.95);
+}
+
+/* Adjust / Reset Overlay on Review Slots */
+.review-photo-slot-container {
+  position: relative;
+  overflow: hidden;
+}
+
+.adjust-btn-overlay {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.8) 0%, rgba(0, 0, 0, 0) 100%);
+  padding: 8px;
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  opacity: 0.85; /* semi-visible so user knows they exist on touch screens, or fully visible on hover */
+  transition: opacity 0.2s ease;
+  z-index: 10;
+}
+
+.review-photo-slot-container:hover .adjust-btn-overlay {
+  opacity: 1;
+}
+
+.adjust-btn-action {
+  background-color: rgba(28, 14, 5, 0.9);
+  border: 1px solid var(--color-gold);
+  color: var(--color-gold);
+  font-family: var(--font-main);
+  font-weight: 700;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.2s, color 0.2s, transform 0.1s;
+}
+
+.adjust-btn-action:hover {
+  background-color: var(--color-gold);
+  color: #000;
+}
+
+.adjust-btn-action:active {
+  transform: scale(0.92);
+}
+
+.adjust-btn-action.reset {
+  border-color: #ff5555;
+  color: #ff5555;
+}
+
+.adjust-btn-action.reset:hover {
+  background-color: #ff5555;
+  color: #fff;
+}
+
 
 
 

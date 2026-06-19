@@ -3,6 +3,7 @@ import * as fabric from 'fabric';
 import { Type, Sparkles, Smile, Palette, Trash2, ArrowLeft, ArrowRight, Plus, X, RotateCw } from 'lucide-react';
 import { getCustomStickers, addCustomSticker, deleteCustomSticker } from '../utils/stickerStore';
 import { LAYOUTS } from '../utils/layoutConfig';
+import { calculateCropTransform } from '../utils/cropHelper';
 
 // Vite dynamic glob import of all stickers inside src/assets/
 const stickerModules = import.meta.glob('../assets/*.png', { eager: true });
@@ -15,6 +16,28 @@ const ASSET_STICKERS = Object.keys(stickerModules)
   .map((key) => {
     return stickerModules[key].default || stickerModules[key];
   });
+
+const generateRetroDateSticker = () => {
+  const d = new Date();
+  const yy = String(d.getFullYear()).slice(-2);
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  const stampString = `'${yy}  ${mm}  ${dd}`;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = 180;
+  canvas.height = 40;
+  const ctx = canvas.getContext('2d');
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.font = 'bold 24px "Courier Prime", "Courier New", Courier, monospace';
+  ctx.fillStyle = '#ff6600'; // retro orange
+  ctx.textBaseline = 'middle';
+  ctx.textAlign = 'center';
+  ctx.fillText(stampString, canvas.width / 2, canvas.height / 2);
+
+  return canvas.toDataURL('image/png');
+};
 
 const EditorStudio = ({ layout, photos, onBack, onGeneratePrint }) => {
   const canvasRef = useRef(null);
@@ -39,6 +62,11 @@ const EditorStudio = ({ layout, photos, onBack, onGeneratePrint }) => {
   // Custom stickers state
   const [customStickers, setCustomStickers] = useState([]);
   const customStickerInputRef = useRef(null);
+  const [retroDateSticker, setRetroDateSticker] = useState('');
+
+  useEffect(() => {
+    setRetroDateSticker(generateRetroDateSticker());
+  }, []);
 
   // Load custom stickers from IndexedDB on mount
   useEffect(() => {
@@ -66,8 +94,8 @@ const EditorStudio = ({ layout, photos, onBack, onGeneratePrint }) => {
         const newSticker = await addCustomSticker(dataUrl, file.name);
         setCustomStickers(prev => [newSticker, ...prev]);
         
-        // Auto-add custom sticker to fabric canvas upon upload
-        addPremiumSticker(dataUrl);
+        // Auto-enter placement mode for the new custom sticker upon upload
+        setPlacementMode({ type: 'sticker', stickerUrl: dataUrl });
       } catch (err) {
         console.error('Error saving sticker:', err);
         alert('Failed to save sticker in database.');
@@ -126,95 +154,123 @@ const EditorStudio = ({ layout, photos, onBack, onGeneratePrint }) => {
   const MAX_STICKERS = layoutCfg.maxStickers;
   const MAX_TEXTS = layoutCfg.maxTexts;
 
-  const touchDragStickerRef = useRef(null);
+  const [placementMode, setPlacementMode] = useState(null);
+  const placementModeRef = useRef(null);
 
-  const handleDragStart = (e, url) => {
-    e.dataTransfer.setData('text/plain', url);
-    e.dataTransfer.effectAllowed = 'copy';
+  useEffect(() => {
+    placementModeRef.current = placementMode;
+  }, [placementMode]);
+
+  const layoutCfgRef = useRef(layoutCfg);
+  useEffect(() => {
+    layoutCfgRef.current = layoutCfg;
+  }, [layoutCfg]);
+
+  const activeThemeRef = useRef(activeTheme);
+  useEffect(() => {
+    activeThemeRef.current = activeTheme;
+  }, [activeTheme]);
+
+  const refreshCanvasZOrder = (canvas) => {
+    if (!canvas) return;
+    const allObjects = canvas.getObjects();
+    
+    const photos = [];
+    const overlays = [];
+    const stickers = [];
+    const texts = [];
+    const others = [];
+
+    allObjects.forEach(obj => {
+      if (obj.isPhotoLayer) {
+        photos.push(obj);
+      } else if (
+        obj.isOverlayLayer || 
+        obj.tag === 'brandingCaption' || 
+        obj.stroke === 'rgba(0,0,0,0.06)' || 
+        obj.rx === 2
+      ) {
+        overlays.push(obj);
+      } else if (obj.isTextLayer) {
+        texts.push(obj);
+      } else if (obj.selectable) {
+        stickers.push(obj);
+      } else {
+        others.push(obj);
+      }
+    });
+
+    const sorted = [...photos, ...overlays, ...stickers, ...texts, ...others];
+    
+    sorted.forEach((obj, idx) => {
+      canvas.moveObjectTo(obj, idx);
+    });
   };
 
-  const handleDragOver = (e) => {
-    e.preventDefault();
-    if (e.dataTransfer) {
-      e.dataTransfer.dropEffect = 'copy';
+  const insertStickerAt = (canvas, url, x, y) => {
+    const objs = canvas.getObjects();
+    const currentStickers = objs.filter(obj => obj.selectable && !obj.isTextLayer);
+    if (currentStickers.length >= layoutCfgRef.current.maxStickers) {
+      alert(`Sticker limit reached (${layoutCfgRef.current.maxStickers} max).`);
+      return;
     }
+
+    const imgEl = new Image();
+    imgEl.src = url;
+    imgEl.onload = () => {
+      const ImageClass = fabric.FabricImage || fabric.Image;
+      const fabricImg = new ImageClass(imgEl, {
+        left: x - 40,
+        top: y - 40,
+        cornerColor: 'var(--color-gold)',
+        cornerSize: 14,
+        transparentCorners: false,
+        rotatingPointOffset: 25,
+        isUserSticker: true
+      });
+      fabricImg.scaleToWidth(80);
+      canvas.add(fabricImg);
+      
+      refreshCanvasZOrder(canvas);
+      canvas.setActiveObject(fabricImg);
+      canvas.renderAll();
+      
+      updateObjectCounts();
+    };
   };
 
-  const handleDrop = (e) => {
-    e.preventDefault();
-    const url = e.dataTransfer.getData('text/plain');
-    if (!url) return;
-    
-    if (!fabricCanvasRef.current) return;
-    const canvas = fabricCanvasRef.current;
-    
-    const clientX = e.clientX;
-    const clientY = e.clientY;
-    
-    const pointer = canvas.getPointer({ clientX, clientY });
-    addPremiumStickerAtPosition(url, pointer.x, pointer.y);
-  };
-
-  // Touch drag and drop helpers for mobile viewports
-  const handleStickerTouchStart = (e, url) => {
-    touchDragStickerRef.current = url;
-    const touch = e.touches[0];
-    
-    // Create floating thumbnail preview
-    const preview = document.createElement('img');
-    preview.src = url;
-    preview.id = 'mobile-drag-sticker-preview';
-    preview.style.position = 'fixed';
-    preview.style.width = '60px';
-    preview.style.height = '60px';
-    preview.style.objectFit = 'contain';
-    preview.style.pointerEvents = 'none';
-    preview.style.zIndex = '9999';
-    preview.style.opacity = '0.75';
-    preview.style.left = `${touch.clientX - 30}px`;
-    preview.style.top = `${touch.clientY - 30}px`;
-    document.body.appendChild(preview);
-  };
-
-  const handleStickerTouchMove = (e) => {
-    if (!touchDragStickerRef.current) return;
-    const touch = e.touches[0];
-    const preview = document.getElementById('mobile-drag-sticker-preview');
-    if (preview) {
-      preview.style.left = `${touch.clientX - 30}px`;
-      preview.style.top = `${touch.clientY - 30}px`;
+  const insertTextAt = (canvas, fontFamily, x, y) => {
+    const objs = canvas.getObjects();
+    const currentTexts = objs.filter(obj => obj.selectable && obj.isTextLayer);
+    if (currentTexts.length >= layoutCfgRef.current.maxTexts) {
+      alert(`Text layer limit reached (${layoutCfgRef.current.maxTexts} max).`);
+      return;
     }
-  };
 
-  const handleStickerTouchEnd = (e) => {
-    const url = touchDragStickerRef.current;
-    touchDragStickerRef.current = null;
+    const textColor = activeThemeRef.current.id === 'black' ? '#ffffff' : '#000000';
+
+    const text = new fabric.IText('Tap to type', {
+      left: x - 50,
+      top: y - 15,
+      fontFamily: fontFamily,
+      fontSize: 24,
+      fill: textColor,
+      isTextLayer: true,
+      isUserText: true,
+      padding: 12,
+      cornerColor: 'var(--color-gold)',
+      cornerSize: 14,
+      transparentCorners: false,
+      rotatingPointOffset: 25
+    });
+
+    canvas.add(text);
     
-    const preview = document.getElementById('mobile-drag-sticker-preview');
-    if (preview) {
-      preview.remove();
-    }
+    refreshCanvasZOrder(canvas);
+    canvas.setActiveObject(text);
+    canvas.renderAll();
     
-    if (!url) return;
-    
-    const touch = e.changedTouches[0];
-    const clientX = touch.clientX;
-    const clientY = touch.clientY;
-    
-    if (!fabricCanvasRef.current || !canvasRef.current) return;
-    const canvas = fabricCanvasRef.current;
-    const canvasEl = canvasRef.current;
-    const rect = canvasEl.getBoundingClientRect();
-    
-    if (
-      clientX >= rect.left &&
-      clientX <= rect.right &&
-      clientY >= rect.top &&
-      clientY <= rect.bottom
-    ) {
-      const pointer = canvas.getPointer({ clientX, clientY });
-      addPremiumStickerAtPosition(url, pointer.x, pointer.y);
-    }
+    updateObjectCounts();
   };
 
 
@@ -262,20 +318,6 @@ const EditorStudio = ({ layout, photos, onBack, onGeneratePrint }) => {
     canvas.on('object:added', updateObjectCounts);
     canvas.on('object:removed', updateObjectCounts);
 
-    // Canvas native drag and drop listeners
-    canvas.on('dragover', (opt) => {
-      opt.e.preventDefault();
-    });
-
-    canvas.on('drop', (opt) => {
-      opt.e.preventDefault();
-      const url = opt.e.dataTransfer.getData('text/plain');
-      if (url) {
-        const pointer = canvas.getPointer(opt.e);
-        addPremiumStickerAtPosition(url, pointer.x, pointer.y);
-      }
-    });
-
     canvas.on('text:changed', (opt) => {
       const target = opt.target;
       if (target && target.isTextLayer) {
@@ -299,13 +341,16 @@ const EditorStudio = ({ layout, photos, onBack, onGeneratePrint }) => {
         canvas.hoverCursor = 'grab';
         e.preventDefault();
       }
+      if (e.key === 'Escape') {
+        setPlacementMode(null);
+      }
     };
 
     const handleKeyUp = (e) => {
       if (e.code === 'Space') {
         spacePressed = false;
-        canvas.defaultCursor = 'default';
-        canvas.hoverCursor = 'move';
+        canvas.defaultCursor = placementModeRef.current ? 'crosshair' : 'default';
+        canvas.hoverCursor = placementModeRef.current ? 'crosshair' : 'move';
       }
     };
 
@@ -313,6 +358,33 @@ const EditorStudio = ({ layout, photos, onBack, onGeneratePrint }) => {
     window.addEventListener('keyup', handleKeyUp);
 
     canvas.on('mouse:down', (opt) => {
+      if (placementModeRef.current) {
+        const mode = placementModeRef.current;
+        const pointer = opt.scenePoint;
+        
+        // Bounds checking
+        if (
+          pointer.x >= 0 &&
+          pointer.x <= canvas.width &&
+          pointer.y >= 0 &&
+          pointer.y <= canvas.height
+        ) {
+          opt.e.preventDefault();
+          opt.e.stopPropagation();
+
+          // synchronous reset of placement state/ref to prevent touch duplication
+          setPlacementMode(null);
+          placementModeRef.current = null;
+
+          if (mode.type === 'sticker') {
+            insertStickerAt(canvas, mode.stickerUrl, pointer.x, pointer.y);
+          } else if (mode.type === 'text') {
+            insertTextAt(canvas, mode.fontFamily, pointer.x, pointer.y);
+          }
+        }
+        return;
+      }
+
       const evt = opt.e;
       // Allow panning with space pressed, middle mouse button
       if (spacePressed || evt.button === 1) {
@@ -466,6 +538,19 @@ const EditorStudio = ({ layout, photos, onBack, onGeneratePrint }) => {
     };
   }, []);
 
+  useEffect(() => {
+    if (!fabricCanvasRef.current) return;
+    const canvas = fabricCanvasRef.current;
+    if (placementMode) {
+      canvas.defaultCursor = 'crosshair';
+      canvas.hoverCursor = 'crosshair';
+    } else {
+      canvas.defaultCursor = 'default';
+      canvas.hoverCursor = 'move';
+    }
+    canvas.requestRenderAll();
+  }, [placementMode]);
+
   const updateObjectCounts = () => {
     if (!fabricCanvasRef.current) return;
     const objs = fabricCanvasRef.current.getObjects();
@@ -479,25 +564,32 @@ const EditorStudio = ({ layout, photos, onBack, onGeneratePrint }) => {
     const ImageClass = fabric.FabricImage || fabric.Image;
 
     // Helper function to load captured photo directly into Fabric workspace via static fromURL
-    const addImageToSlot = (photoSrc, slotX, slotY, slotWidth, slotHeight, callback) => {
+    const addImageToSlot = (photo, slotX, slotY, slotWidth, slotHeight, callback) => {
       const ImageClass = fabric.FabricImage || fabric.Image;
 
+      const src = typeof photo === 'string' ? photo : photo.src;
+      const crop = typeof photo === 'object' && photo.crop ? photo.crop : { zoom: 1.0, offsetXRatio: 0.0, offsetYRatio: 0.0 };
+
       // Use Fabric's standard fromURL Promise loader (standard for Fabric v7)
-      ImageClass.fromURL(photoSrc).then((photoImg) => {
+      ImageClass.fromURL(src).then((photoImg) => {
         if (!fabricCanvasRef.current) return;
 
         const imgW = photoImg.width || 1;
         const imgH = photoImg.height || 1;
+
+        const transform = calculateCropTransform(imgW, imgH, slotWidth, slotHeight, crop);
 
         photoImg.set({
           left: slotX,
           top: slotY,
           originX: 'left',
           originY: 'top',
-          width: imgW,
-          height: imgH,
-          scaleX: slotWidth / imgW,
-          scaleY: slotHeight / imgH,
+          cropX: (transform.maxOffsetX - transform.offsetXClamped) / transform.s,
+          cropY: (transform.maxOffsetY - transform.offsetYClamped) / transform.s,
+          width: slotWidth / transform.s,
+          height: slotHeight / transform.s,
+          scaleX: transform.s,
+          scaleY: transform.s,
           selectable: false, // Static layout photo
           evented: false,    // No selection/pan/zoom
           hoverCursor: 'default',
@@ -606,12 +698,10 @@ const EditorStudio = ({ layout, photos, onBack, onGeneratePrint }) => {
 
     // Add captured/uploaded photos
     layoutCfg.photoSlots.forEach((slot, index) => {
-      const photoSrc = photos[index];
-      if (photoSrc) {
-        addImageToSlot(photoSrc, slot.left, slot.top, slot.width, slot.height, () => {
+      const photo = photos[index];
+      if (photo) {
+        addImageToSlot(photo, slot.left, slot.top, slot.width, slot.height, () => {
           if (!fabricCanvasRef.current) return;
-          // Add orange date stamp (Vintage filter effect, hidden by default)
-          createDateStamp(canvas, slot.left, slot.top, slot.width, slot.height, `dateStamp${index}`);
 
           completedSlots += 1;
           if (completedSlots === totalExpected) {
@@ -625,29 +715,6 @@ const EditorStudio = ({ layout, photos, onBack, onGeneratePrint }) => {
         }
       }
     });
-  };
-
-  // Create retro orange date stamps
-  const createDateStamp = (canvas, left, top, width, height, tag) => {
-    const d = new Date();
-    const yy = String(d.getFullYear()).slice(-2);
-    const mm = String(d.getMonth() + 1).padStart(2, ' ');
-    const dd = String(d.getDate()).padStart(2, '0');
-    const stampString = `'${yy}  ${mm}  ${dd}`;
-
-    const textStamp = new fabric.Text(stampString, {
-      left: left + width - 110,
-      top: top + height - 25,
-      fontFamily: 'Courier Prime',
-      fontSize: 14,
-      fontWeight: 'bold',
-      fill: '#ff6600', // retro digital orange
-      opacity: 0, // hidden by default
-      selectable: false,
-      evented: false,
-      tag: tag
-    });
-    canvas.add(textStamp);
   };
 
   // Create caption at the bottom chin
@@ -710,11 +777,6 @@ const EditorStudio = ({ layout, photos, onBack, onGeneratePrint }) => {
     const objects = canvas.getObjects();
     const photoLayers = objects.filter(obj => obj.isPhotoLayer);
     
-    // Date stamp is only visible for vintage
-    const stamps = objects.filter(obj => obj.tag && obj.tag.startsWith('dateStamp'));
-    stamps.forEach(stamp => {
-      stamp.set({ opacity: filterName === 'vintage' ? 0.95 : 0 });
-    });
 
     photoLayers.forEach(photoObj => {
       photoObj.filters = []; // clear current filters
@@ -741,98 +803,7 @@ const EditorStudio = ({ layout, photos, onBack, onGeneratePrint }) => {
     canvas.renderAll();
   };
 
-  // Sticker adder (loads asset-based PNG from Vite glob)
-  const addPremiumSticker = (url) => {
-    if (!fabricCanvasRef.current) return;
-    if (stickerCount >= MAX_STICKERS) {
-      alert(`Sticker limit reached (${MAX_STICKERS} max).`);
-      return;
-    }
 
-    const canvas = fabricCanvasRef.current;
-    const center = canvas.getVpCenter();
-    
-    const imgEl = new Image();
-    imgEl.src = url;
-    imgEl.onload = () => {
-      const ImageClass = fabric.FabricImage || fabric.Image;
-      const fabricImg = new ImageClass(imgEl, {
-        left: center.x - 40,
-        top: center.y - 40,
-        cornerColor: 'var(--color-gold)',
-        cornerSize: 14,
-        transparentCorners: false,
-        rotatingPointOffset: 25
-      });
-      fabricImg.scaleToWidth(80);
-      canvas.add(fabricImg);
-      canvas.bringToFront(fabricImg);
-      canvas.setActiveObject(fabricImg);
-      canvas.renderAll();
-    };
-  };
-
-  // Drag and Drop sticker helper to place at a specific coordinate
-  const addPremiumStickerAtPosition = (url, x, y) => {
-    if (!fabricCanvasRef.current) return;
-    if (stickerCount >= MAX_STICKERS) {
-      alert(`Sticker limit reached (${MAX_STICKERS} max).`);
-      return;
-    }
-
-    const canvas = fabricCanvasRef.current;
-    
-    const imgEl = new Image();
-    imgEl.src = url;
-    imgEl.onload = () => {
-      const ImageClass = fabric.FabricImage || fabric.Image;
-      const fabricImg = new ImageClass(imgEl, {
-        left: x - 40,
-        top: y - 40,
-        cornerColor: 'var(--color-gold)',
-        cornerSize: 14,
-        transparentCorners: false,
-        rotatingPointOffset: 25
-      });
-      fabricImg.scaleToWidth(80);
-      canvas.add(fabricImg);
-      canvas.bringToFront(fabricImg);
-      canvas.setActiveObject(fabricImg);
-      canvas.renderAll();
-    };
-  };
-
-  // Text layer adder
-  const addTextLayer = (fontName) => {
-    if (!fabricCanvasRef.current) return;
-    if (textCount >= MAX_TEXTS) {
-      alert(`Text layer limit reached (${MAX_TEXTS} max).`);
-      return;
-    }
-
-    const canvas = fabricCanvasRef.current;
-    const center = canvas.getVpCenter();
-    const textColor = activeTheme.id === 'black' ? '#ffffff' : '#000000';
-
-    const text = new fabric.IText('Tap to type', {
-      left: center.x - 50,
-      top: center.y - 15,
-      fontFamily: fontName,
-      fontSize: 24,
-      fill: textColor,
-      isTextLayer: true,
-      padding: 12, // Larger touch target
-      cornerColor: 'var(--color-gold)',
-      cornerSize: 14,
-      transparentCorners: false,
-      rotatingPointOffset: 25
-    });
-
-    canvas.add(text);
-    canvas.bringToFront(text);
-    canvas.setActiveObject(text);
-    canvas.renderAll();
-  };
 
   // Delete selection
   const deleteSelected = () => {
@@ -894,14 +865,25 @@ const EditorStudio = ({ layout, photos, onBack, onGeneratePrint }) => {
           padding: (layout === 'strip' || layout === 'strip5') ? '24px 12px 60px 12px' : '12px'
         }}
       >
+        {placementMode && (
+          <div className="placement-banner">
+            <span className="placement-banner-text">
+              {placementMode.type === 'sticker' 
+                ? '✨ Tap anywhere on the template to place sticker' 
+                : '⌨️ Tap anywhere on the template to place text'}
+            </span>
+            <button className="placement-banner-close" onClick={() => setPlacementMode(null)}>
+              <X size={16} />
+            </button>
+          </div>
+        )}
+
         <div 
-          className="canvas-box-shadow-wrapper" 
-          onDragOver={handleDragOver}
-          onDrop={handleDrop}
+          className={`canvas-box-shadow-wrapper ${placementMode ? 'canvas-highlight-placement' : ''}`}
           style={{ 
             maxHeight: (layout === 'strip' || layout === 'strip5') ? 'none' : '72vh',
             backgroundColor: layout === 'digicam' ? 'transparent' : '#ffffff',
-            boxShadow: layout === 'digicam' ? 'none' : '0 12px 36px rgba(0, 0, 0, 0.6)'
+            boxShadow: layout === 'digicam' ? 'none' : (placementMode ? undefined : '0 12px 36px rgba(0, 0, 0, 0.6)')
           }}
         >
           <canvas ref={canvasRef} />
@@ -1054,13 +1036,8 @@ const EditorStudio = ({ layout, photos, onBack, onGeneratePrint }) => {
               {customStickers.map((sticker) => (
                 <div 
                   key={sticker.id} 
-                  className="sticker-card" 
-                  onClick={() => addPremiumSticker(sticker.dataUrl)}
-                  draggable={true}
-                  onDragStart={(e) => handleDragStart(e, sticker.dataUrl)}
-                  onTouchStart={(e) => handleStickerTouchStart(e, sticker.dataUrl)}
-                  onTouchMove={handleStickerTouchMove}
-                  onTouchEnd={handleStickerTouchEnd}
+                  className={`sticker-card ${placementMode?.type === 'sticker' && placementMode.stickerUrl === sticker.dataUrl ? 'active-placement' : ''}`}
+                  onClick={() => setPlacementMode({ type: 'sticker', stickerUrl: sticker.dataUrl })}
                   style={{ overflow: 'hidden', padding: '2px', position: 'relative' }}
                   title={sticker.name}
                 >
@@ -1096,19 +1073,30 @@ const EditorStudio = ({ layout, photos, onBack, onGeneratePrint }) => {
                 </div>
               ))}
 
+              {/* Render optional retro date stamp sticker */}
+              {retroDateSticker && (
+                <div 
+                  className={`sticker-card ${placementMode?.type === 'sticker' && placementMode.stickerUrl === retroDateSticker ? 'active-placement' : ''}`}
+                  onClick={() => setPlacementMode({ type: 'sticker', stickerUrl: retroDateSticker })}
+                  style={{ overflow: 'hidden', padding: '2px' }}
+                  title="Retro Date Stamp"
+                >
+                  <img 
+                    src={retroDateSticker} 
+                    alt="Retro Date" 
+                    style={{ width: '100%', height: '100%', objectFit: 'contain', background: 'rgba(255,255,255,0.05)' }}
+                  />
+                </div>
+              )}
+
               {/* Render default premium stickers */}
               {ASSET_STICKERS.map((url, index) => {
                 const filename = url.split('/').pop().split('.')[0] || `sticker-${index}`;
                 return (
                   <div 
                     key={url} 
-                    className="sticker-card" 
-                    onClick={() => addPremiumSticker(url)}
-                    draggable={true}
-                    onDragStart={(e) => handleDragStart(e, url)}
-                    onTouchStart={(e) => handleStickerTouchStart(e, url)}
-                    onTouchMove={handleStickerTouchMove}
-                    onTouchEnd={handleStickerTouchEnd}
+                    className={`sticker-card ${placementMode?.type === 'sticker' && placementMode.stickerUrl === url ? 'active-placement' : ''}`}
+                    onClick={() => setPlacementMode({ type: 'sticker', stickerUrl: url })}
                     style={{ overflow: 'hidden', padding: '2px' }}
                     title={filename}
                   >
@@ -1144,10 +1132,10 @@ const EditorStudio = ({ layout, photos, onBack, onGeneratePrint }) => {
                   }}
                 />
                 
-                <div className="text-font-card" onClick={() => addTextLayer('Pacifico')} style={{ padding: '8px 16px' }}>
+                <div className={`text-font-card ${placementMode?.type === 'text' && placementMode.fontFamily === 'Pacifico' ? 'active-placement' : ''}`} onClick={() => setPlacementMode({ type: 'text', fontFamily: 'Pacifico' })} style={{ padding: '8px 16px' }}>
                   <span style={{ fontFamily: 'Pacifico', fontSize: '0.9rem' }}>✍️ Handwriting</span>
                 </div>
-                <div className="text-font-card" onClick={() => addTextLayer('Courier Prime')} style={{ padding: '8px 16px' }}>
+                <div className={`text-font-card ${placementMode?.type === 'text' && placementMode.fontFamily === 'Courier Prime' ? 'active-placement' : ''}`} onClick={() => setPlacementMode({ type: 'text', fontFamily: 'Courier Prime' })} style={{ padding: '8px 16px' }}>
                   <span style={{ fontFamily: 'Courier Prime', fontSize: '0.9rem' }}>⌨️ Typewriter</span>
                 </div>
               </div>
@@ -1158,23 +1146,23 @@ const EditorStudio = ({ layout, photos, onBack, onGeneratePrint }) => {
         {/* Tab menu switcher */}
         <div className="studio-tabs">
           {layout !== 'digicam' && (
-            <button className={`studio-tab-btn ${activeTab === 'themes' ? 'active' : ''}`} onClick={() => setActiveTab('themes')}>
+            <button className={`studio-tab-btn ${activeTab === 'themes' ? 'active' : ''}`} onClick={() => { setActiveTab('themes'); setPlacementMode(null); }}>
               <Palette size={18} />
               <span>Themes</span>
             </button>
           )}
 
-          <button className={`studio-tab-btn ${activeTab === 'filters' ? 'active' : ''}`} onClick={() => setActiveTab('filters')}>
+          <button className={`studio-tab-btn ${activeTab === 'filters' ? 'active' : ''}`} onClick={() => { setActiveTab('filters'); setPlacementMode(null); }}>
             <Sparkles size={18} />
             <span>Filters</span>
           </button>
           
-          <button className={`studio-tab-btn ${activeTab === 'stickers' ? 'active' : ''}`} onClick={() => setActiveTab('stickers')}>
+          <button className={`studio-tab-btn ${activeTab === 'stickers' ? 'active' : ''}`} onClick={() => { setActiveTab('stickers'); setPlacementMode(null); }}>
             <Smile size={18} />
             <span>Stickers</span>
           </button>
 
-          <button className={`studio-tab-btn ${activeTab === 'text' ? 'active' : ''}`} onClick={() => setActiveTab('text')}>
+          <button className={`studio-tab-btn ${activeTab === 'text' ? 'active' : ''}`} onClick={() => { setActiveTab('text'); setPlacementMode(null); }}>
             <Type size={18} />
             <span>Text</span>
           </button>

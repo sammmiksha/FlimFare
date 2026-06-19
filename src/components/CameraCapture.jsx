@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Camera, Upload, RotateCw, ArrowLeft, Check, RefreshCw } from 'lucide-react';
 import { audioManager } from '../utils/audioManager';
 import { LAYOUTS } from '../utils/layoutConfig';
+import { calculateCropTransform } from '../utils/cropHelper';
 
 const CameraCapture = ({ layout, onBack, onComplete }) => {
   const videoRef = useRef(null);
@@ -16,6 +17,9 @@ const CameraCapture = ({ layout, onBack, onComplete }) => {
   const [showReview, setShowReview] = useState(false); // Review overlay state
   const [cameraError, setCameraError] = useState(null);
   const [captureMode, setCaptureMode] = useState(null); // null, 'camera', 'upload'
+  const [adjustingIndex, setAdjustingIndex] = useState(null);
+  const [workingParams, setWorkingParams] = useState({ zoom: 1.0, offsetXRatio: 0.0, offsetYRatio: 0.0 });
+  const [resetKey, setResetKey] = useState(0);
 
   const totalSnapsNeeded = LAYOUTS[layout]?.photoCount || 1;
 
@@ -69,6 +73,29 @@ const CameraCapture = ({ layout, onBack, onComplete }) => {
     };
   }, [stream]);
 
+  // Recalculate bounds and clamp/sync offsets when template layout changes
+  useEffect(() => {
+    if (tempPhotos.length > 0) {
+      let updated = false;
+      const nextPhotos = tempPhotos.map(photo => {
+        if (photo.crop && photo.crop.layoutId !== layout) {
+          updated = true;
+          return {
+            ...photo,
+            crop: {
+              ...photo.crop,
+              layoutId: layout
+            }
+          };
+        }
+        return photo;
+      });
+      if (updated) {
+        setTempPhotos(nextPhotos);
+      }
+    }
+  }, [layout, tempPhotos]);
+
   const toggleCamera = () => {
     if (isCapturing) return;
     setFacingMode(prev => prev === 'user' ? 'environment' : 'user');
@@ -98,7 +125,20 @@ const CameraCapture = ({ layout, onBack, onComplete }) => {
       } else if (count < 0) {
         clearInterval(interval);
         // Take photo!
-        const newPhoto = capturePhoto();
+        const capData = capturePhoto();
+        const newPhoto = {
+          src: capData.src,
+          width: capData.width,
+          height: capData.height,
+          crop: {
+            zoom: 1.0,
+            offsetXRatio: 0.0,
+            offsetYRatio: 0.0,
+            layoutId: layout,
+            focalPointX: 0.5,
+            focalPointY: 0.5
+          }
+        };
         const updatedPhotos = [...accumulatedPhotos, newPhoto];
         setTempPhotos(updatedPhotos);
         setCountdown(null);
@@ -128,50 +168,34 @@ const CameraCapture = ({ layout, onBack, onComplete }) => {
 
   // Offscreen precise canvas crop logic
   const capturePhoto = () => {
-    if (!videoRef.current) return '';
+    if (!videoRef.current) return { src: '', width: 0, height: 0 };
 
     // Play synthesized mechanical shutter click sound instantly (iOS safe)
     audioManager.playClick();
 
     const video = videoRef.current;
-    const videoWidth = video.videoWidth;
-    const videoHeight = video.videoHeight;
-    const videoAspect = videoWidth / videoHeight;
-
-    const layoutCfg = LAYOUTS[layout] || LAYOUTS.single;
-    const targetAspect = layoutCfg.photoSlots[0].aspect;
-    const targetWidth = layout === 'single' ? 600 : layout === 'digicam' ? 700 : 900;
-    const targetHeight = Math.round(targetWidth / targetAspect);
+    const videoWidth = video.videoWidth || 640;
+    const videoHeight = video.videoHeight || 480;
 
     const offscreenCanvas = document.createElement('canvas');
-    offscreenCanvas.width = targetWidth;
-    offscreenCanvas.height = targetHeight;
+    offscreenCanvas.width = videoWidth;
+    offscreenCanvas.height = videoHeight;
     const ctx = offscreenCanvas.getContext('2d');
-
-    // Calculate crop coordinates
-    let sx = 0;
-    let sy = 0;
-    let sw = videoWidth;
-    let sh = videoHeight;
-
-    if (videoAspect > targetAspect) {
-      sw = videoHeight * targetAspect;
-      sx = (videoWidth - sw) / 2;
-    } else if (videoAspect < targetAspect) {
-      sh = videoWidth / targetAspect;
-      sy = (videoHeight - sh) / 2;
-    }
 
     ctx.save();
     // Mirror the capture if using user front-facing camera
     if (facingMode === 'user') {
-      ctx.translate(targetWidth, 0);
+      ctx.translate(videoWidth, 0);
       ctx.scale(-1, 1);
     }
-    ctx.drawImage(video, sx, sy, sw, sh, 0, 0, targetWidth, targetHeight);
+    ctx.drawImage(video, 0, 0, videoWidth, videoHeight);
     ctx.restore();
 
-    return offscreenCanvas.toDataURL('image/png');
+    return {
+      src: offscreenCanvas.toDataURL('image/jpeg', 0.85),
+      width: videoWidth,
+      height: videoHeight
+    };
   };
 
   const handleAcceptPhotos = () => {
@@ -189,41 +213,73 @@ const CameraCapture = ({ layout, onBack, onComplete }) => {
     }
   };
 
-  // Helper to center-crop uploaded images to the target template aspect ratio
-  const cropImageToAspect = (dataUrl, aspect) => {
+  const handleSaveAdjust = () => {
+    setTempPhotos(prev => {
+      const updated = [...prev];
+      updated[adjustingIndex] = {
+        ...updated[adjustingIndex],
+        crop: {
+          ...updated[adjustingIndex].crop,
+          zoom: workingParams.zoom,
+          offsetXRatio: workingParams.offsetXRatio,
+          offsetYRatio: workingParams.offsetYRatio
+        }
+      };
+      return updated;
+    });
+    setAdjustingIndex(null);
+  };
+
+  const handleResetSlot = (index) => {
+    setTempPhotos(prev => {
+      const updated = [...prev];
+      updated[index] = {
+        ...updated[index],
+        crop: {
+          ...updated[index].crop,
+          zoom: 1.0,
+          offsetXRatio: 0.0,
+          offsetYRatio: 0.0
+        }
+      };
+      return updated;
+    });
+  };
+
+  // Helper to resize uploaded images to max 1280px maintaining aspect ratio
+  const processUploadedPhoto = (dataUrl) => {
     return new Promise((resolve) => {
       const img = new Image();
       img.onload = () => {
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
-        
         const imgAspect = img.width / img.height;
-        let sw = img.width;
-        let sh = img.height;
-        let sx = 0;
-        let sy = 0;
+        let width = img.width;
+        let height = img.height;
+        const maxDimension = 1280;
 
-        if (imgAspect > aspect) {
-          sw = img.height * aspect;
-          sx = (img.width - sw) / 2;
-        } else if (imgAspect < aspect) {
-          sh = img.width / aspect;
-          sy = (img.height - sh) / 2;
+        if (width > maxDimension || height > maxDimension) {
+          if (imgAspect > 1) {
+            width = maxDimension;
+            height = Math.round(maxDimension / imgAspect);
+          } else {
+            height = maxDimension;
+            width = Math.round(maxDimension * imgAspect);
+          }
         }
 
-        // Output sizes matching standard high-res templates
-        const targetWidth = layout === 'single' ? 600 : layout === 'digicam' ? 700 : 900;
-        const targetHeight = Math.round(targetWidth / aspect);
-
-        canvas.width = targetWidth;
-        canvas.height = targetHeight;
-
-        // Draw center-cropped portion onto offscreen canvas
-        ctx.drawImage(img, sx, sy, sw, sh, 0, 0, targetWidth, targetHeight);
-        resolve(canvas.toDataURL('image/png'));
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, width, height);
+        
+        resolve({
+          src: canvas.toDataURL('image/jpeg', 0.85),
+          width,
+          height
+        });
       };
       img.onerror = () => {
-        resolve(dataUrl); // Fallback to raw if image failed to load/parse
+        resolve({ src: dataUrl, width: 600, height: 600 });
       };
       img.src = dataUrl;
     });
@@ -234,38 +290,61 @@ const CameraCapture = ({ layout, onBack, onComplete }) => {
     if (!files || files.length === 0) return;
 
     const filesArray = Array.from(files).slice(0, totalSnapsNeeded);
-    const targetAspect = LAYOUTS[layout]?.photoSlots[0].aspect || 1.0;
     
-    // Read and crop all files in parallel
-    const readAndCropPromises = filesArray.map((file) => {
+    // Read and process all files in parallel
+    const readAndProcessPromises = filesArray.map((file) => {
       return new Promise((resolve) => {
         const reader = new FileReader();
         reader.onload = async (event) => {
           try {
-            const cropped = await cropImageToAspect(event.target.result, targetAspect);
-            resolve(cropped);
+            const processed = await processUploadedPhoto(event.target.result);
+            resolve(processed);
           } catch (err) {
-            console.error('Cropping failed:', err);
-            resolve(event.target.result); // Fallback to raw dataURL
+            console.error('Processing failed:', err);
+            resolve({ src: event.target.result, width: 600, height: 600 });
           }
         };
-        reader.onerror = () => resolve('');
+        reader.onerror = () => resolve(null);
         reader.readAsDataURL(file);
       });
     });
 
-    const croppedPhotos = await Promise.all(readAndCropPromises);
-    const validPhotos = croppedPhotos.filter(p => p !== '');
+    const processedPhotos = await Promise.all(readAndProcessPromises);
+    const validPhotos = processedPhotos.filter(p => p !== null);
 
     if (validPhotos.length === 0) {
       alert('Could not load any selected files. Please try again.');
       return;
     }
 
+    const mappedPhotos = validPhotos.map(photo => ({
+      src: photo.src,
+      width: photo.width,
+      height: photo.height,
+      crop: {
+        zoom: 1.0,
+        offsetXRatio: 0.0,
+        offsetYRatio: 0.0,
+        layoutId: layout,
+        focalPointX: 0.5,
+        focalPointY: 0.5
+      }
+    }));
+
     // Pad if fewer photos uploaded than required
-    const finalPhotos = [...validPhotos];
+    const finalPhotos = [...mappedPhotos];
     while (finalPhotos.length < totalSnapsNeeded) {
-      finalPhotos.push(validPhotos[0] || ''); // pad with first photo
+      finalPhotos.push({
+        ...mappedPhotos[0],
+        crop: {
+          zoom: 1.0,
+          offsetXRatio: 0.0,
+          offsetYRatio: 0.0,
+          layoutId: layout,
+          focalPointX: 0.5,
+          focalPointY: 0.5
+        }
+      });
     }
 
     setTempPhotos(finalPhotos);
@@ -386,6 +465,15 @@ const CameraCapture = ({ layout, onBack, onComplete }) => {
     );
   }
 
+  const targetAspect = LAYOUTS[layout]?.photoSlots[0].aspect || 1.0;
+  let adjustW = 280;
+  let adjustH = Math.round(adjustW / targetAspect);
+  if (adjustH > 350) {
+    adjustH = 350;
+    adjustW = Math.round(adjustH * targetAspect);
+  }
+  const adjustModalDims = { w: adjustW, h: adjustH };
+
   // 3. Normal Camera view / Review view
   return (
     <div className="camera-container">
@@ -477,59 +565,106 @@ const CameraCapture = ({ layout, onBack, onComplete }) => {
           <div className="review-title">Review Snaps</div>
           <div className="review-preview-container">
             <div className="review-preview-frame">
-              {layout === 'single' && (
-                // Polaroid Preview mock
-                <div style={styles.reviewPolaroidFrame}>
-                  <img 
-                    src={tempPhotos[0]} 
-                    style={styles.reviewPolaroidImg} 
-                    alt="Polaroid capture" 
-                  />
-                </div>
-              )}
-              {layout === 'digicam' && (
-                // Digicam Preview mock with overlay
-                <div style={styles.reviewDigicamFrame}>
-                  <img 
-                    src={tempPhotos[0]} 
-                    style={styles.reviewDigicamImg} 
-                    alt="Digicam capture" 
-                  />
-                  <img 
-                    src="/retro_camera_frame.png"
-                    style={styles.reviewDigicamOverlay}
-                    alt="Camera overlay"
-                  />
-                </div>
-              )}
-              {layout === 'strip' && (
-                // Film Strip Preview mock (3 photos)
-                <div style={styles.reviewStripFrame}>
-                  {tempPhotos.slice(0, 3).map((url, i) => (
-                    <div key={i} style={styles.reviewStripSlot}>
-                      <img 
-                        src={url} 
-                        style={styles.reviewStripImg} 
-                        alt={`Snap ${i+1}`} 
+              <div className="review-strip-container custom-scrollbar">
+                {layout === 'single' && (
+                  // Polaroid Preview mock
+                  <div style={styles.reviewPolaroidFrame}>
+                    <ReviewPhotoSlot
+                      photo={tempPhotos[0]}
+                      aspect={1.0}
+                      width={248}
+                      onAdjustClick={() => {
+                        setWorkingParams({
+                          zoom: tempPhotos[0].crop?.zoom || 1.0,
+                          offsetXRatio: tempPhotos[0].crop?.offsetXRatio || 0.0,
+                          offsetYRatio: tempPhotos[0].crop?.offsetYRatio || 0.0
+                        });
+                        setAdjustingIndex(0);
+                      }}
+                      onResetClick={() => handleResetSlot(0)}
+                    />
+                  </div>
+                )}
+                {layout === 'digicam' && (
+                  // Digicam Preview mock with overlay
+                  <div style={styles.reviewDigicamFrame}>
+                    <div style={{
+                      position: 'absolute',
+                      left: '37.7%', // Match 386 / 1024
+                      top: '39.2%',  // Match 402 / 1024
+                      width: '38.5%', // Match 394 / 1024
+                      height: '32.5%', // Match 333 / 1024
+                      zIndex: 1
+                    }}>
+                      <ReviewPhotoSlot
+                        photo={tempPhotos[0]}
+                        aspect={138 / 117}
+                        width={108} // 280px container * 38.5% is approx 108px
+                        onAdjustClick={() => {
+                          setWorkingParams({
+                            zoom: tempPhotos[0].crop?.zoom || 1.0,
+                            offsetXRatio: tempPhotos[0].crop?.offsetXRatio || 0.0,
+                            offsetYRatio: tempPhotos[0].crop?.offsetYRatio || 0.0
+                          });
+                          setAdjustingIndex(0);
+                        }}
+                        onResetClick={() => handleResetSlot(0)}
                       />
                     </div>
-                  ))}
-                </div>
-              )}
-              {layout === 'strip5' && (
-                // Film Strip Preview mock (5 photos)
-                <div style={{ ...styles.reviewStripFrame, gap: '6px', padding: '8px' }}>
-                  {tempPhotos.slice(0, 5).map((url, i) => (
-                    <div key={i} style={{ ...styles.reviewStripSlot, height: '70px' }}>
-                      <img 
-                        src={url} 
-                        style={styles.reviewStripImg} 
-                        alt={`Snap ${i+1}`} 
-                      />
-                    </div>
-                  ))}
-                </div>
-              )}
+                    <img 
+                      src="/retro_camera_frame.png"
+                      style={styles.reviewDigicamOverlay}
+                      alt="Camera overlay"
+                    />
+                  </div>
+                )}
+                {layout === 'strip' && (
+                  // Film Strip Preview mock (3 photos)
+                  <div style={styles.reviewStripFrame}>
+                    {tempPhotos.slice(0, 3).map((photo, i) => (
+                      <div key={i} style={{ ...styles.reviewStripSlot, height: 'auto' }}>
+                        <ReviewPhotoSlot
+                          photo={photo}
+                          aspect={0.75}
+                          width={156} // 180px container - 24px padding = 156px
+                          onAdjustClick={() => {
+                            setWorkingParams({
+                              zoom: photo.crop?.zoom || 1.0,
+                              offsetXRatio: photo.crop?.offsetXRatio || 0.0,
+                              offsetYRatio: photo.crop?.offsetYRatio || 0.0
+                            });
+                            setAdjustingIndex(i);
+                          }}
+                          onResetClick={() => handleResetSlot(i)}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {layout === 'strip5' && (
+                  // Film Strip Preview mock (5 photos)
+                  <div style={{ ...styles.reviewStripFrame, gap: '6px', padding: '8px' }}>
+                    {tempPhotos.slice(0, 5).map((photo, i) => (
+                      <div key={i} style={{ ...styles.reviewStripSlot, height: 'auto' }}>
+                        <ReviewPhotoSlot
+                          photo={photo}
+                          aspect={180 / 145}
+                          width={164} // 180px container - 16px padding = 164px
+                          onAdjustClick={() => {
+                            setWorkingParams({
+                              zoom: photo.crop?.zoom || 1.0,
+                              offsetXRatio: photo.crop?.offsetXRatio || 0.0,
+                              offsetYRatio: photo.crop?.offsetYRatio || 0.0
+                            });
+                            setAdjustingIndex(i);
+                          }}
+                          onResetClick={() => handleResetSlot(i)}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
           <div className="review-actions">
@@ -541,6 +676,50 @@ const CameraCapture = ({ layout, onBack, onComplete }) => {
               <Check size={18} />
               <span>Looks Good!</span>
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Adjust Modal Overlay */}
+      {adjustingIndex !== null && (
+        <div className="adjust-modal-overlay">
+          <div className="adjust-modal-container">
+            <div className="adjust-modal-header">
+              <h3>Adjust Photo {adjustingIndex + 1}</h3>
+            </div>
+            
+            <div className="adjust-modal-body">
+              <InteractivePhotoAdjust
+                key={`${adjustingIndex}-${resetKey}`}
+                photo={tempPhotos[adjustingIndex]}
+                slotW={adjustModalDims.w}
+                slotH={adjustModalDims.h}
+                onChange={(adjustedParams) => {
+                  setWorkingParams(adjustedParams);
+                }}
+              />
+              <p className="adjust-modal-instructions">
+                Drag to pan | Scroll or Pinch to zoom | Double tap to reset
+              </p>
+            </div>
+
+            <div className="adjust-modal-footer">
+              <button className="btn-outline" onClick={() => setAdjustingIndex(null)}>
+                Cancel
+              </button>
+              <button 
+                className="btn-outline" 
+                onClick={() => {
+                  setWorkingParams({ zoom: 1.0, offsetXRatio: 0.0, offsetYRatio: 0.0 });
+                  setResetKey(prev => prev + 1);
+                }}
+              >
+                Fit
+              </button>
+              <button className="btn-gold" onClick={handleSaveAdjust}>
+                Save
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -700,4 +879,263 @@ const styles = {
   }
 };
 
+const ReviewPhotoSlot = ({ photo, aspect, width, onAdjustClick, onResetClick }) => {
+  const slotW = width;
+  const slotH = width / aspect;
+
+  const { w, h, offsetXClamped, offsetYClamped } = calculateCropTransform(
+    photo.width,
+    photo.height,
+    slotW,
+    slotH,
+    photo.crop
+  );
+
+  return (
+    <div
+      onDoubleClick={onResetClick}
+      style={{
+        width: `${slotW}px`,
+        height: `${slotH}px`,
+        position: 'relative',
+        overflow: 'hidden',
+        backgroundColor: '#222',
+        border: '1px solid #ddd'
+      }}
+      className="review-photo-slot-container"
+    >
+      <img
+        src={photo.src}
+        alt="Slot preview"
+        style={{
+          width: `${w}px`,
+          height: `${h}px`,
+          position: 'absolute',
+          left: '50%',
+          top: '50%',
+          transform: `translate(-50%, -50%) translate(${offsetXClamped}px, ${offsetYClamped}px)`,
+          pointerEvents: 'none'
+        }}
+      />
+      <div className="adjust-btn-overlay">
+        <button className="adjust-btn-action" onClick={(e) => { e.stopPropagation(); onAdjustClick(); }}>
+          Adjust
+        </button>
+        <button className="adjust-btn-action reset" onClick={(e) => { e.stopPropagation(); onResetClick(); }}>
+          Reset
+        </button>
+      </div>
+    </div>
+  );
+};
+
+const InteractivePhotoAdjust = ({ photo, slotW, slotH, onChange }) => {
+  const [zoom, setZoom] = useState(photo.crop?.zoom || 1.0);
+  const [offsetXRatio, setOffsetXRatio] = useState(photo.crop?.offsetXRatio || 0.0);
+  const [offsetYRatio, setOffsetYRatio] = useState(photo.crop?.offsetYRatio || 0.0);
+
+  const containerRef = useRef(null);
+  const isDragging = useRef(false);
+  const startDragPos = useRef({ x: 0, y: 0 });
+  const startOffset = useRef({ x: 0, y: 0 });
+
+  const isPinching = useRef(false);
+  const startPinchDist = useRef(0);
+  const startPinchZoom = useRef(1.0);
+
+  // Keep a ref to the latest values to avoid stale closures in event listeners
+  const stateRef = useRef({ zoom, offsetXRatio, offsetYRatio });
+  useEffect(() => {
+    stateRef.current = { zoom, offsetXRatio, offsetYRatio };
+  }, [zoom, offsetXRatio, offsetYRatio]);
+
+  const { w, h, offsetXClamped, offsetYClamped } = calculateCropTransform(
+    photo.width,
+    photo.height,
+    slotW,
+    slotH,
+    { zoom, offsetXRatio, offsetYRatio }
+  );
+
+  const handleMouseDown = (e) => {
+    e.preventDefault();
+    isDragging.current = true;
+    startDragPos.current = { x: e.clientX, y: e.clientY };
+    startOffset.current = { x: stateRef.current.offsetXRatio * slotW, y: stateRef.current.offsetYRatio * slotH };
+  };
+
+  const handleMouseMove = (e) => {
+    if (!isDragging.current) return;
+    const dx = e.clientX - startDragPos.current.x;
+    const dy = e.clientY - startDragPos.current.y;
+
+    const newOffsetX = startOffset.current.x + dx;
+    const newOffsetY = startOffset.current.y + dy;
+
+    // Get bounds for current zoom
+    const transform = calculateCropTransform(
+      photo.width,
+      photo.height,
+      slotW,
+      slotH,
+      { zoom: stateRef.current.zoom, offsetXRatio: 0, offsetYRatio: 0 }
+    );
+
+    const clampedRatioX = Math.max(transform.minRatioX, Math.min(transform.maxRatioX, newOffsetX / slotW));
+    const clampedRatioY = Math.max(transform.minRatioY, Math.min(transform.maxRatioY, newOffsetY / slotH));
+
+    setOffsetXRatio(clampedRatioX);
+    setOffsetYRatio(clampedRatioY);
+    onChange({ zoom: stateRef.current.zoom, offsetXRatio: clampedRatioX, offsetYRatio: clampedRatioY });
+  };
+
+  const handleMouseUp = () => {
+    isDragging.current = false;
+  };
+
+  const handleWheel = (e) => {
+    e.preventDefault();
+    const zoomSpeed = 0.005;
+    const delta = -e.deltaY * zoomSpeed;
+    const newZoom = Math.max(1.0, Math.min(4.0, stateRef.current.zoom + delta));
+
+    // Get bounds for new zoom
+    const transform = calculateCropTransform(
+      photo.width,
+      photo.height,
+      slotW,
+      slotH,
+      { zoom: newZoom, offsetXRatio: 0, offsetYRatio: 0 }
+    );
+
+    const clampedRatioX = Math.max(transform.minRatioX, Math.min(transform.maxRatioX, stateRef.current.offsetXRatio));
+    const clampedRatioY = Math.max(transform.minRatioY, Math.min(transform.maxRatioY, stateRef.current.offsetYRatio));
+
+    setZoom(newZoom);
+    setOffsetXRatio(clampedRatioX);
+    setOffsetYRatio(clampedRatioY);
+    onChange({ zoom: newZoom, offsetXRatio: clampedRatioX, offsetYRatio: clampedRatioY });
+  };
+
+  const handleTouchStart = (e) => {
+    if (e.touches.length === 1) {
+      isDragging.current = true;
+      isPinching.current = false;
+      const touch = e.touches[0];
+      startDragPos.current = { x: touch.clientX, y: touch.clientY };
+      startOffset.current = { x: stateRef.current.offsetXRatio * slotW, y: stateRef.current.offsetYRatio * slotH };
+    } else if (e.touches.length === 2) {
+      isDragging.current = false;
+      isPinching.current = true;
+      const t1 = e.touches[0];
+      const t2 = e.touches[1];
+      startPinchDist.current = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
+      startPinchZoom.current = stateRef.current.zoom;
+    }
+  };
+
+  const handleTouchMove = (e) => {
+    if (isDragging.current && e.touches.length === 1) {
+      const touch = e.touches[0];
+      const dx = touch.clientX - startDragPos.current.x;
+      const dy = touch.clientY - startDragPos.current.y;
+
+      const newOffsetX = startOffset.current.x + dx;
+      const newOffsetY = startOffset.current.y + dy;
+
+      const transform = calculateCropTransform(
+        photo.width,
+        photo.height,
+        slotW,
+        slotH,
+        { zoom: stateRef.current.zoom, offsetXRatio: 0, offsetYRatio: 0 }
+      );
+
+      const clampedRatioX = Math.max(transform.minRatioX, Math.min(transform.maxRatioX, newOffsetX / slotW));
+      const clampedRatioY = Math.max(transform.minRatioY, Math.min(transform.maxRatioY, newOffsetY / slotH));
+
+      setOffsetXRatio(clampedRatioX);
+      setOffsetYRatio(clampedRatioY);
+      onChange({ zoom: stateRef.current.zoom, offsetXRatio: clampedRatioX, offsetYRatio: clampedRatioY });
+    } else if (isPinching.current && e.touches.length === 2) {
+      const t1 = e.touches[0];
+      const t2 = e.touches[1];
+      const currentDist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
+      const factor = currentDist / startPinchDist.current;
+      const newZoom = Math.max(1.0, Math.min(4.0, startPinchZoom.current * factor));
+
+      const transform = calculateCropTransform(
+        photo.width,
+        photo.height,
+        slotW,
+        slotH,
+        { zoom: newZoom, offsetXRatio: 0, offsetYRatio: 0 }
+      );
+
+      const clampedRatioX = Math.max(transform.minRatioX, Math.min(transform.maxRatioX, stateRef.current.offsetXRatio));
+      const clampedRatioY = Math.max(transform.minRatioY, Math.min(transform.maxRatioY, stateRef.current.offsetYRatio));
+
+      setZoom(newZoom);
+      setOffsetXRatio(clampedRatioX);
+      setOffsetYRatio(clampedRatioY);
+      onChange({ zoom: newZoom, offsetXRatio: clampedRatioX, offsetYRatio: clampedRatioY });
+    }
+  };
+
+  const handleTouchEnd = () => {
+    isDragging.current = false;
+    isPinching.current = false;
+  };
+
+  const handleDoubleClick = () => {
+    setZoom(1.0);
+    setOffsetXRatio(0.0);
+    setOffsetYRatio(0.0);
+    onChange({ zoom: 1.0, offsetXRatio: 0.0, offsetYRatio: 0.0 });
+  };
+
+  return (
+    <div
+      ref={containerRef}
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
+      onMouseLeave={handleMouseUp}
+      onWheel={handleWheel}
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
+      onDoubleClick={handleDoubleClick}
+      style={{
+        width: `${slotW}px`,
+        height: `${slotH}px`,
+        overflow: 'hidden',
+        position: 'relative',
+        cursor: isDragging.current ? 'grabbing' : 'grab',
+        backgroundColor: '#000',
+        borderRadius: '8px',
+        border: '2px solid var(--color-gold)',
+        touchAction: 'none'
+      }}
+    >
+      <img
+        src={photo.src}
+        alt="Adjust crop"
+        draggable={false}
+        style={{
+          width: `${w}px`,
+          height: `${h}px`,
+          position: 'absolute',
+          left: '50%',
+          top: '50%',
+          transform: `translate(-50%, -50%) translate(${offsetXClamped}px, ${offsetYClamped}px)`,
+          pointerEvents: 'none',
+          userSelect: 'none'
+        }}
+      />
+    </div>
+  );
+};
+
 export default CameraCapture;
+
